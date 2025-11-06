@@ -31,6 +31,7 @@ class MainWindow(QMainWindow):
         self.current_frame_num = -1
         self.selected_object_id = None # 新增：跟踪当前选中的对象ID
         self._is_selecting_programmatically = False # 新增：防止信号循环的标志
+        self._tech_dialog_open = False # 防抖：防止技术动作对话框重复打开
         self.last_selected_event_id = None # 跟踪最后选中的事件ID，用于连续调整
         self.play_a_name = ""
         self.play_b_name = ""
@@ -1148,6 +1149,10 @@ class MainWindow(QMainWindow):
 
         # 允许编辑 RALLY_START, SHOT, RALLY_END
         if event_type in ['RALLY_START', 'SHOT', 'RALLY_END']:
+            # 对话框防抖：如果已经打开，则直接返回
+            if self._tech_dialog_open:
+                return
+            self._tech_dialog_open = True
             dialog = TechniqueSelectionDialog(clicked_event['details'], self)
             
             if event_type == 'RALLY_START':
@@ -1165,7 +1170,10 @@ class MainWindow(QMainWindow):
                         dialog.major_list.setCurrentRow(i)
                         break
             
-            if dialog.exec():
+            # 关闭时无论结果如何都清理标志
+            result = dialog.exec()
+            self._tech_dialog_open = False
+            if result:
                 selection = dialog.get_selection()
                 if selection:
                     clicked_event['details'].update(selection)
@@ -1174,6 +1182,9 @@ class MainWindow(QMainWindow):
                         self.recalculate_scores()
                     print(f"已更新事件 {event_id} 的细节。")
                     self.refresh_all_ui(scroll_to_event_id=event_id)
+                    # 关闭后保持聚焦与选中项
+                    self._select_event_in_tree(event_id)
+                    self.event_tree.setFocus()
                     self.set_dirty()
 
     def delete_selected_event(self):
@@ -1439,7 +1450,10 @@ class MainWindow(QMainWindow):
         if event_type not in ['RALLY_START', 'SHOT', 'RALLY_END']:
             return
         
-        # 打开编辑对话框（复用双击的逻辑）
+        # 打开编辑对话框（复用双击的逻辑），带防抖
+        if self._tech_dialog_open:
+            return
+        self._tech_dialog_open = True
         dialog = TechniqueSelectionDialog(clicked_event['details'], self)
         
         if event_type == 'RALLY_START':
@@ -1457,7 +1471,9 @@ class MainWindow(QMainWindow):
                     dialog.major_list.setCurrentRow(i)
                     break
         
-        if dialog.exec():
+        result = dialog.exec()
+        self._tech_dialog_open = False
+        if result:
             selection = dialog.get_selection()
             if selection:
                 clicked_event['details'].update(selection)
@@ -1466,6 +1482,9 @@ class MainWindow(QMainWindow):
                     self.recalculate_scores()
                 print(f"已更新事件 {event_id} 的细节。")
                 self.refresh_all_ui(scroll_to_event_id=event_id)
+                # 关闭后保持聚焦与选中项
+                self._select_event_in_tree(event_id)
+                self.event_tree.setFocus()
                 self.set_dirty()
     
     def _select_event_in_tree(self, event_id):

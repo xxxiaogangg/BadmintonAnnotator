@@ -9,13 +9,13 @@ TECHNIQUES = {
     "发球": ["正手发网前球", "反手发网前球", "正手发平高球", "反手发平高球", "正手发高远球", "反手发高远球"],
     "搓放球": ["正手搓球", "反手搓球", "正手放网前球", "反手放网前球"],
     "推扑球": ["正手推球", "反手推球", "正手扑球", "反手扑球"],
-    "吊球": ["正手吊球", "反手吊球", "头顶吊球"],
     "挑球": ["正手挑球", "反手挑球"],
     "勾球": ["正手勾球", "反手勾球"],
     "抽球": ["正手抽球", "反手抽球"],
     "高球": ["正手击高球", "头顶手击高球", "反手击高球"],
+    "吊球": ["正手吊球", "反手吊球", "头顶吊球"],
     "杀球": ["正手杀球", "反手杀球", "头顶杀球"],
-    "劈球": ["正手劈球", "反手劈球", "头顶劈球"],
+    # "劈球": ["正手劈球", "反手劈球", "头顶劈球"],
     "封网": ["正手封网", "反手封网", "头顶封网"],
     "得分方式/失误原因": [
         "进攻得分", "对手进攻失误", "对手发球失误", "对手非受迫性失误", 
@@ -66,6 +66,52 @@ class TechniqueSelectionDialog(QDialog):
         
         # 5. 设置初始选中项
         self.set_current_selection(current_selection)
+        # 初始焦点在第一列
+        self.hand_list.setFocus()
+
+    def keyPressEvent(self, event):
+        """支持 左右切换列，上下选择项，回车确认"""
+        key = event.key()
+        modifiers = event.modifiers()
+
+        # 当前焦点在哪一列
+        focus_widget = self.focusWidget()
+        columns = [self.hand_list, self.major_list, self.minor_list]
+        try:
+            col_index = columns.index(focus_widget) if focus_widget in columns else 0
+        except ValueError:
+            col_index = 0
+
+        # 左右键切换列
+        if key == Qt.Key.Key_Right:
+            if col_index < 2:
+                columns[col_index + 1].setFocus()
+            return
+        if key == Qt.Key.Key_Left:
+            if col_index > 0:
+                columns[col_index - 1].setFocus()
+            return
+
+        # 上下键在当前列移动
+        if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            listw = columns[col_index]
+            row = listw.currentRow()
+            if row < 0 and listw.count() > 0:
+                listw.setCurrentRow(0)
+            else:
+                if key == Qt.Key.Key_Up and row > 0:
+                    listw.setCurrentRow(row - 1)
+                elif key == Qt.Key.Key_Down and row < listw.count() - 1:
+                    listw.setCurrentRow(row + 1)
+            return
+
+        # 回车确认
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.accept()
+            return
+
+        # 其他交给父类
+        super().keyPressEvent(event)
 
     def update_minor_list(self, current_item):
         """当大类变化时，更新小类列表"""
