@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QListWidget, QMenuBar, QMenu, QListWidgetItem, ) # Add QListWidgetItem
 from PyQt6.QtGui import QPixmap, QImage, QAction, QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QThread, QRect, QPoint, QTimer, QEvent
-from PyQt6.QtWidgets import QLabel, QSplitter, QComboBox, QMessageBox, QTreeWidgetItem, QTreeWidgetItemIterator
+from PyQt6.QtWidgets import (QLabel, QSplitter, QComboBox, QMessageBox, QTreeWidgetItem, 
+                             QTreeWidgetItemIterator, QAbstractItemView)
 
 from core.video_worker import VideoWorker
 from widgets.drawing_label import DrawingLabel, TechniqueSelectionDialog
@@ -30,6 +31,7 @@ class MainWindow(QMainWindow):
         self.current_frame_num = -1
         self.selected_object_id = None # 新增：跟踪当前选中的对象ID
         self._is_selecting_programmatically = False # 新增：防止信号循环的标志
+        self.last_selected_event_id = None # 跟踪最后选中的事件ID，用于连续调整
         self.play_a_name = ""
         self.play_b_name = ""
         # 自动保存
@@ -64,21 +66,6 @@ class MainWindow(QMainWindow):
         # 将左右两大块添加到主布局
         main_layout.addWidget(left_panel, 3)      # 左侧视频区，比例为3
         main_layout.addWidget(right_splitter, 1)  # 右侧整个工具区，比例为1
-        
-    def _create_menu_bar_bak(self):
-        menu_bar = self.menuBar()
-        file_menu = menu_bar.addMenu("&文件")
-        open_action = QAction("&打开视频...", self)
-        open_action.triggered.connect(self.open_video_file)
-        file_menu.addAction(open_action)
-
-        save_action = QAction("&保存标注...", self)
-        save_action.triggered.connect(self.save_annotations)
-        file_menu.addAction(save_action)
-
-        load_action = QAction("&加载标注...", self)
-        load_action.triggered.connect(self.load_annotations)
-        file_menu.addAction(load_action)
         
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -387,31 +374,6 @@ class MainWindow(QMainWindow):
 
         self.time_label.setText(f"{format_time(current_sec)} / {format_time(total_sec)}")
 
-    def _create_shortcuts_bak(self):
-        """创建全局快捷键"""
-        # --- 播放控制 ---
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self, self.toggle_play_pause)
-        QShortcut(QKeySequence(Qt.Key.Key_Left), self, lambda: self.seek_video(max(0, self.current_frame_num - 1)))
-        QShortcut(QKeySequence(Qt.Key.Key_Right), self, lambda: self.seek_video(min(self.slider.maximum(), self.current_frame_num + 1)))
-        QShortcut(QKeySequence("Ctrl+Left"), self, lambda: self.step_frames(forward=False))
-        QShortcut(QKeySequence("Ctrl+Right"), self, lambda: self.step_frames(forward=True))
-        
-        # --- 事件标注 (这是最能提升效率的部分) ---
-        QShortcut(QKeySequence(Qt.Key.Key_S), self, self.add_set_start_event)
-        QShortcut(QKeySequence("Shift+S"), self, self.add_set_end_event)
-        QShortcut(QKeySequence(Qt.Key.Key_R), self, self.add_rally_start_event)
-        QShortcut(QKeySequence(Qt.Key.Key_E), self, self.add_rally_end_event) # 'E' for End
-        QShortcut(QKeySequence(Qt.Key.Key_I), self, self.add_shot_event) # 'I' for Insert
-        
-        # --- 标注模式切换 ---
-        QShortcut(QKeySequence(Qt.Key.Key_Q), self, lambda: self.on_mode_button_clicked("select"))
-        QShortcut(QKeySequence(Qt.Key.Key_W), self, lambda: self.on_mode_button_clicked("box"))
-        QShortcut(QKeySequence(Qt.Key.Key_A), self, lambda: self.on_mode_button_clicked("point")) # Q W A 方便左手操作
-        
-        # --- 数据操作 ---
-        QShortcut(QKeySequence(Qt.Key.Key_Delete), self, self.delete_selected_event)
-        QShortcut(QKeySequence("Backspace"), self, self.delete_selected_event)
-
     def on_mode_button_clicked(self, mode):
         self.video_label.set_draw_mode(mode)
         self.btn_mode_select.setChecked(mode == "select")
@@ -571,7 +533,7 @@ class MainWindow(QMainWindow):
         # 信号连接
         self.video_worker.video_loaded.connect(self.on_video_loaded)
         self.video_worker.frame_ready.connect(self.update_frame)
-        self.video_worker.error.connect(print)
+        self.video_worker.error.connect(self.on_video_error)
         self.video_thread.started.connect(self.video_worker.run)
         self.video_worker.finished.connect(self.video_thread.quit)
         self.video_worker.finished.connect(self.video_worker.deleteLater)
@@ -609,7 +571,7 @@ class MainWindow(QMainWindow):
             print("未找到任何标注文件，将创建新的标注。")
             self.annotations = {}
             self.update_match_info_ui()
-            self.refresh_event_tree()
+            self.refresh_all_ui()
             self.refresh_ui_for_current_frame()
 
                 # 将弹窗逻辑移到这里
@@ -639,12 +601,23 @@ class MainWindow(QMainWindow):
             
             # 更新UI
             self.update_match_info_ui()
-            self.refresh_event_tree()
+            self.refresh_all_ui()
             self.refresh_ui_for_current_frame()
 
+    def on_video_error(self, error_message):
+        """处理视频加载或播放错误"""
+        QMessageBox.critical(self, "视频错误", f"视频处理时发生错误：\n{error_message}")
+        print(f"视频错误: {error_message}")
+    
     def on_video_loaded(self, total_frames, fps):
         print(f"视频加载成功: {total_frames} 帧, {fps} FPS")
         self.slider.setRange(0, total_frames - 1)
+        
+        # 更新视频FPS，用于步进间隔计算
+        self.video_fps = fps if fps > 0 else 30
+        # 更新步进间隔字典中的秒数对应的帧数
+        self.step_intervals["1 秒"] = int(self.video_fps)
+        self.step_intervals["5 秒"] = int(self.video_fps * 5)
         
         # 获取视频尺寸并设置
         cap = cv2.VideoCapture(self.video_worker.video_path)
@@ -655,7 +628,7 @@ class MainWindow(QMainWindow):
         self.video_label.set_video_dimensions(width, height)
         self.video_worker.set_target_size(self.video_label.width(), self.video_label.height())
         
-        # 启动自动保存
+        # 启动自动保存（60秒 = 60000毫秒）
         self.autosave_timer.start(60000)
         
         # 无论是新文件还是加载的文件，都显示第一帧
@@ -760,7 +733,7 @@ class MainWindow(QMainWindow):
             }
         }
         self.add_event(new_event)
-        self.refresh_event_tree()
+        self.refresh_all_ui()
 
     def add_rally_end_event(self):
         """添加一个回合结束事件，并让用户选择得分方（逻辑修正版）"""
@@ -805,7 +778,7 @@ class MainWindow(QMainWindow):
         self.add_event(new_event)
         
         # 4. 刷新UI并检查本局是否结束
-        self.refresh_event_tree()
+        self.refresh_all_ui()
         set_winner = self.check_set_winner()
         if set_winner:
             from PyQt6.QtWidgets import QMessageBox
@@ -913,7 +886,7 @@ class MainWindow(QMainWindow):
         print(f"在帧 {frame_to_add} 添加了待定击球事件，并已刷新回合内球员顺序。")
         
         # 4. 刷新UI
-        self.refresh_event_tree()
+        self.refresh_all_ui()
 
     def update_match_info_ui(self):
         """根据 self.annotations 更新比赛信息的UI显示 (增强版)"""
@@ -1004,15 +977,25 @@ class MainWindow(QMainWindow):
         self.annotations['events'].append(event_obj)
         # 保持事件按帧号排序
         self.annotations['events'].sort(key=lambda x: x['frame'])
-        self.refresh_event_tree() # 刷新树形列表
-        self.set_dirty() # <--- 调用
-
-    def refresh_event_tree(self):
-        """刷新事件树，精确保持每个节点的展开/折叠状态（最终健壮版）"""
         
+        # 重新计算比分以确保数据一致性（特别是当用户手动编辑事件时）
+        # 对于可能影响比分的事件，重新计算整个比分历史
+        if event_obj['type'] in ['RALLY_END', 'SET_START']:
+            self.recalculate_scores()
+        
+        self.refresh_all_ui(scroll_to_event_id=event_obj['event_id'])
+        self.set_dirty()
+
+    # 统一的UI刷新函数，替代原来的 refresh_event_tree() 和 refresh_all_ui()
+    def refresh_all_ui(self, scroll_to_event_id=None, scroll_to_bottom=None):
+        """
+        统一的UI刷新函数，刷新事件树并保持展开状态。
+        :param scroll_to_event_id: 刷新后需要滚动到的事件ID（优先）。
+        :param scroll_to_bottom: 是否强制滚动到底部（默认True，除非指定了scroll_to_event_id）。
+        """
+
         # 1. 刷新前，记录所有展开的节点的 event_id
         expanded_ids = set()
-        from PyQt6.QtWidgets import QTreeWidgetItemIterator
         iterator = QTreeWidgetItemIterator(self.event_tree)
         while iterator.value():
             item = iterator.value()
@@ -1021,12 +1004,10 @@ class MainWindow(QMainWindow):
                 if item_id:
                     expanded_ids.add(item_id)
             iterator += 1
-
+        
         # 暂停UI更新，可以轻微提升大规模刷新性能
         self.event_tree.setUpdatesEnabled(False)
         self.event_tree.clear()
-        
-        from PyQt6.QtWidgets import QTreeWidgetItem
         
         # 使用字典来管理所有创建的UI节点，便于后续查找
         all_items = {} # key: event_id, value: QTreeWidgetItem
@@ -1108,9 +1089,17 @@ class MainWindow(QMainWindow):
                 item.setExpanded(True)
 
         self.event_tree.resizeColumnToContents(0)
+        
+        # 智能滚动逻辑：优先滚动到指定事件，否则滚动到底部
+        if scroll_to_event_id and scroll_to_event_id in all_items:
+            item_to_scroll = all_items[scroll_to_event_id]
+            self.event_tree.scrollToItem(item_to_scroll, QAbstractItemView.ScrollHint.PositionAtCenter)
+        elif scroll_to_bottom is None or scroll_to_bottom:
+            # 默认滚动到底部（保持向后兼容）
+            self.event_tree.scrollToBottom()
+
         # 恢复UI更新
         self.event_tree.setUpdatesEnabled(True)
-        self.event_tree.scrollToBottom()
 
     def on_event_tree_item_clicked(self, item, column):
         """槽函数：当事件树中的一项被点击时（逻辑优化版）"""
@@ -1120,6 +1109,9 @@ class MainWindow(QMainWindow):
         event_id = item.data(0, Qt.ItemDataRole.UserRole + 1)
         if not event_id: return
 
+        # 更新最后选中的事件ID，用于连续调整功能
+        self.last_selected_event_id = event_id
+
         # 找到被点击的事件对象
         clicked_event = next((e for e in self.annotations['events'] if e['event_id'] == event_id), None)
         if not clicked_event: return
@@ -1128,7 +1120,7 @@ class MainWindow(QMainWindow):
         # 如果点击的是父节点（局或回合），我们用它自身存的帧号（就是开始帧）。
         # 如果点击的是子节点（击球或回合结束），也用它自身存的帧号。
         # 这样逻辑就统一了：跳转到被点击节点自身代表的事件帧。
-        # 上一版逻辑“点击回合结束跳转到回合开始”被移除，因为现在可以直接点击回合父节点。
+        # 上一版逻辑"点击回合结束跳转到回合开始"被移除，因为现在可以直接点击回合父节点。
         
         frame_num = clicked_event['frame']
         
@@ -1145,6 +1137,9 @@ class MainWindow(QMainWindow):
         """当事件树中的一项被双击时，用于编辑 SHOT 或 RALLY_END 或 RALLY_START 事件的细节"""
         event_id = item.data(0, Qt.ItemDataRole.UserRole + 1)
         if not event_id: return
+        
+        # 更新最后选中的事件ID，用于连续调整功能
+        self.last_selected_event_id = event_id
 
         clicked_event = next((e for e in self.annotations['events'] if e['event_id'] == event_id), None)
         if not clicked_event: return
@@ -1174,8 +1169,12 @@ class MainWindow(QMainWindow):
                 selection = dialog.get_selection()
                 if selection:
                     clicked_event['details'].update(selection)
+                    # 如果编辑的是可能影响比分的事件，重新计算比分
+                    if clicked_event['type'] in ['RALLY_END', 'SET_START']:
+                        self.recalculate_scores()
                     print(f"已更新事件 {event_id} 的细节。")
-                    self.refresh_event_tree()
+                    self.refresh_all_ui(scroll_to_event_id=event_id)
+                    self.set_dirty()
 
     def delete_selected_event(self):
         """删除事件，并对齐Set和Rally的删除逻辑"""
@@ -1188,8 +1187,6 @@ class MainWindow(QMainWindow):
         events = self.annotations['events']
         event_to_delete = next((e for e in events if e['event_id'] == event_id), None)
         if not event_to_delete: return
-
-        from PyQt6.QtWidgets import QMessageBox
         
         indices_to_delete = []
         rally_to_re_evaluate_index = -1
@@ -1248,10 +1245,245 @@ class MainWindow(QMainWindow):
         
         # 4. 全面刷新UI
         self.update_match_info_ui()
-        self.refresh_event_tree()
+        self.refresh_all_ui() # 不带参数，保持当前视图
         print(f"已删除 {len(indices_to_delete)} 个事件并刷新数据。")
 
         self.set_dirty()
+
+    def adjust_selected_event_frame(self, delta):
+        """
+        调整选中事件的帧号（微调功能）
+        :param delta: 帧号变化量，正数为向前移动，负数为向后移动
+        """
+        # 优先使用当前选中的事件树项，如果没有，则使用最后选中的事件ID
+        event_id = None
+        selected_item = self.event_tree.currentItem()
+        
+        if selected_item:
+            event_id = selected_item.data(0, Qt.ItemDataRole.UserRole + 1)
+        
+        # 如果当前没有选中的项，使用最后选中的事件ID
+        if not event_id and self.last_selected_event_id:
+            event_id = self.last_selected_event_id
+            # 尝试在事件树中找到对应的项并选中它
+            iterator = QTreeWidgetItemIterator(self.event_tree)
+            while iterator.value():
+                item = iterator.value()
+                item_event_id = item.data(0, Qt.ItemDataRole.UserRole + 1)
+                if item_event_id == event_id:
+                    self.event_tree.setCurrentItem(item)
+                    break
+                iterator += 1
+        
+        if not event_id:
+            return
+        
+        # 找到对应的事件对象
+        events = self.annotations.get('events', [])
+        event_to_adjust = next((e for e in events if e['event_id'] == event_id), None)
+        if not event_to_adjust:
+            return
+        
+        # 计算新的帧号
+        old_frame = event_to_adjust['frame']
+        new_frame = old_frame + delta
+        
+        # 边界检查：确保帧号在有效范围内
+        video_info = self.annotations.get('video_info', {})
+        max_frame = video_info.get('total_frames', 0) - 1
+        if max_frame > 0:
+            new_frame = max(0, min(new_frame, max_frame))
+        else:
+            return  # 如果没有视频信息，无法确定边界
+        
+        # 如果帧号没有变化，直接返回
+        if new_frame == old_frame:
+            return
+        
+        # 更新事件的帧号
+        event_to_adjust['frame'] = new_frame
+        
+        # 重新排序事件列表（因为事件是按帧号排序的）
+        events.sort(key=lambda x: x['frame'])
+        
+        # 根据事件类型，可能需要重新计算相关数据
+        event_type = event_to_adjust['type']
+        needs_score_recalc = False
+        
+        if event_type in ['RALLY_END', 'SET_START']:
+            # 影响比分的事件，需要重新计算比分
+            needs_score_recalc = True
+        elif event_type == 'SHOT':
+            # 击球事件，需要重新计算球员顺序
+            # 找到该击球所在的回合
+            event_index = events.index(event_to_adjust)
+            for i in range(event_index, -1, -1):
+                if events[i]['type'] == 'RALLY_START':
+                    self.reevaluate_players_in_rally(i)
+                    break
+        
+        # 如果需要，重新计算比分
+        if needs_score_recalc:
+            self.recalculate_scores()
+        
+        # 更新最后选中的事件ID（确保连续调整时使用正确的事件）
+        self.last_selected_event_id = event_id
+        
+        # 刷新UI，保持选中状态并滚动到该事件
+        self.update_match_info_ui()
+        self.refresh_all_ui(scroll_to_event_id=event_id)
+        
+        # 确保事件树中该事件仍然被选中（刷新后可能会丢失选中状态）
+        QTimer.singleShot(10, lambda: self._ensure_event_selected(event_id))
+        
+        # 跳转到新的帧号
+        if self.video_worker:
+            self.video_worker.seek(new_frame)
+        
+        self.set_dirty()
+        print(f"已将事件 {event_id} ({event_type}) 从帧 {old_frame} 调整到帧 {new_frame}")
+    
+    def _ensure_event_selected(self, event_id):
+        """确保指定的事件在事件树中被选中"""
+        if not event_id:
+            return
+        iterator = QTreeWidgetItemIterator(self.event_tree)
+        while iterator.value():
+            item = iterator.value()
+            item_event_id = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            if item_event_id == event_id:
+                self.event_tree.setCurrentItem(item)
+                self.last_selected_event_id = event_id  # 更新最后选中的事件ID
+                break
+            iterator += 1
+    
+    def navigate_to_adjacent_event(self, direction):
+        """
+        导航到上一个或下一个事件
+        :param direction: -1 表示上一个事件，1 表示下一个事件
+        """
+        # 获取当前选中的事件ID
+        event_id = None
+        selected_item = self.event_tree.currentItem()
+        
+        if selected_item:
+            event_id = selected_item.data(0, Qt.ItemDataRole.UserRole + 1)
+        
+        # 如果当前没有选中的项，使用最后选中的事件ID
+        if not event_id and self.last_selected_event_id:
+            event_id = self.last_selected_event_id
+        
+        if not event_id:
+            return
+        
+        # 获取所有事件并按帧号排序
+        events = self.annotations.get('events', [])
+        if not events:
+            return
+        
+        # 找到当前事件在列表中的索引
+        current_index = -1
+        for i, event in enumerate(events):
+            if event['event_id'] == event_id:
+                current_index = i
+                break
+        
+        if current_index == -1:
+            return
+        
+        # 计算目标索引
+        target_index = current_index + direction
+        
+        # 边界检查
+        if target_index < 0 or target_index >= len(events):
+            return
+        
+        # 获取目标事件
+        target_event = events[target_index]
+        target_event_id = target_event['event_id']
+        
+        # 在事件树中找到并选中该事件
+        self._select_event_in_tree(target_event_id)
+        
+        # 跳转到目标事件的帧号
+        if self.video_worker:
+            self.video_worker.seek(target_event['frame'])
+        
+        print(f"导航到{'下一个' if direction > 0 else '上一个'}事件: {target_event_id} (帧: {target_event['frame']})")
+    
+    def edit_selected_event(self):
+        """打开选中事件的技术动作编辑对话框"""
+        # 获取当前选中的事件ID
+        event_id = None
+        selected_item = self.event_tree.currentItem()
+        
+        if selected_item:
+            event_id = selected_item.data(0, Qt.ItemDataRole.UserRole + 1)
+        
+        # 如果当前没有选中的项，使用最后选中的事件ID
+        if not event_id and self.last_selected_event_id:
+            event_id = self.last_selected_event_id
+        
+        if not event_id:
+            return
+        
+        # 找到对应的事件对象
+        events = self.annotations.get('events', [])
+        clicked_event = next((e for e in events if e['event_id'] == event_id), None)
+        if not clicked_event:
+            return
+        
+        event_type = clicked_event['type']
+        
+        # 只允许编辑 RALLY_START, SHOT, RALLY_END
+        if event_type not in ['RALLY_START', 'SHOT', 'RALLY_END']:
+            return
+        
+        # 打开编辑对话框（复用双击的逻辑）
+        dialog = TechniqueSelectionDialog(clicked_event['details'], self)
+        
+        if event_type == 'RALLY_START':
+            dialog.setWindowTitle("编辑发球技术")
+            # 预选 "发球"
+            for i in range(dialog.major_list.count()):
+                if dialog.major_list.item(i).text() == "发球":
+                    dialog.major_list.setCurrentRow(i)
+                    break
+        elif event_type == 'RALLY_END':
+            dialog.setWindowTitle("选择得分方式或失误原因")
+            # 预选 "得分方式/失误原因"
+            for i in range(dialog.major_list.count()):
+                if dialog.major_list.item(i).text() == "得分方式/失误原因":
+                    dialog.major_list.setCurrentRow(i)
+                    break
+        
+        if dialog.exec():
+            selection = dialog.get_selection()
+            if selection:
+                clicked_event['details'].update(selection)
+                # 如果编辑的是可能影响比分的事件，重新计算比分
+                if clicked_event['type'] in ['RALLY_END', 'SET_START']:
+                    self.recalculate_scores()
+                print(f"已更新事件 {event_id} 的细节。")
+                self.refresh_all_ui(scroll_to_event_id=event_id)
+                self.set_dirty()
+    
+    def _select_event_in_tree(self, event_id):
+        """在事件树中选中指定的事件"""
+        if not event_id:
+            return
+        
+        iterator = QTreeWidgetItemIterator(self.event_tree)
+        while iterator.value():
+            item = iterator.value()
+            item_event_id = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            if item_event_id == event_id:
+                self.event_tree.setCurrentItem(item)
+                self.last_selected_event_id = event_id  # 更新最后选中的事件ID
+                # 确保该项可见
+                self.event_tree.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+                break
+            iterator += 1
 
     def recalculate_scores(self):
         """
@@ -1298,7 +1530,7 @@ class MainWindow(QMainWindow):
 
     def save_annotations(self):
         if not self.annotations:
-            print("没有标注可以保存。")
+            QMessageBox.information(self, "提示", "没有标注可以保存。")
             return
         
         default_path = self.annotations['video_info']['path'] + ".json"
@@ -1309,12 +1541,21 @@ class MainWindow(QMainWindow):
                 with open(file_path, 'w', encoding='utf-8') as f:
                     import json
                     json.dump(self.annotations, f, indent=4, ensure_ascii=False)
-                print(f"标注成功保存到: {file_path}")
+                self.statusBar().showMessage(f"标注已保存到: {file_path}", 3000)
                 backup_path = self.annotations['video_info']['path'] + ".autosave.json"
                 if os.path.exists(backup_path):
-                    os.remove(backup_path)
-                    print(f"已删除自动备份文件: {backup_path}")
+                    try:
+                        os.remove(backup_path)
+                        print(f"已删除自动备份文件: {backup_path}")
+                    except Exception as e:
+                        print(f"删除备份文件失败: {e}")
+                self.data_is_dirty = False  # 保存后重置脏数据标志
+            except PermissionError:
+                QMessageBox.warning(self, "保存失败", f"无法保存文件：权限不足。\n请检查文件是否被其他程序占用。")
+            except OSError as e:
+                QMessageBox.warning(self, "保存失败", f"无法保存文件：\n{str(e)}")
             except Exception as e:
+                QMessageBox.critical(self, "保存失败", f"保存标注时发生错误：\n{str(e)}")
                 print(f"保存失败: {e}")
 
     def load_annotations(self, annotation_path=None):
@@ -1327,14 +1568,23 @@ class MainWindow(QMainWindow):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     import json
                     self.annotations = json.load(f)
+                self.statusBar().showMessage(f"标注已从 {os.path.basename(file_path)} 加载", 3000)
                 print(f"标注成功从 {file_path} 加载。")
                 
                 # 【关键】加载后，必须全面刷新UI
                 self.update_match_info_ui()
-                self.refresh_event_tree()
+                self.refresh_all_ui()
                 self.refresh_ui_for_current_frame()
+                self.data_is_dirty = False  # 加载后重置脏数据标志
                 
+            except FileNotFoundError:
+                QMessageBox.warning(self, "加载失败", f"文件不存在：\n{file_path}")
+            except json.JSONDecodeError as e:
+                QMessageBox.warning(self, "加载失败", f"JSON格式错误：\n{str(e)}\n\n请检查文件是否损坏。")
+            except PermissionError:
+                QMessageBox.warning(self, "加载失败", f"无法读取文件：权限不足。\n请检查文件权限。")
             except Exception as e:
+                QMessageBox.critical(self, "加载失败", f"加载标注时发生错误：\n{str(e)}")
                 print(f"加载失败: {e}")
 
     def eventFilter(self, source, event):
@@ -1363,6 +1613,27 @@ class MainWindow(QMainWindow):
             elif key == Qt.Key.Key_Right and modifiers == Qt.KeyboardModifier.ControlModifier:
                 self.step_frames(forward=True)
                 return True
+            elif key == Qt.Key.Key_Left and modifiers == Qt.KeyboardModifier.ShiftModifier:
+                # Shift + Left: 将选中事件的帧号减1
+                self.adjust_selected_event_frame(-1)
+                return True
+            elif key == Qt.Key.Key_Right and modifiers == Qt.KeyboardModifier.ShiftModifier:
+                # Shift + Right: 将选中事件的帧号加1
+                self.adjust_selected_event_frame(1)
+                return True
+            elif key == Qt.Key.Key_Up and modifiers == Qt.KeyboardModifier.NoModifier:
+                # Up: 选中上一个事件
+                self.navigate_to_adjacent_event(-1)
+                return True
+            elif key == Qt.Key.Key_Down and modifiers == Qt.KeyboardModifier.NoModifier:
+                # Down: 选中下一个事件
+                self.navigate_to_adjacent_event(1)
+                return True
+            elif key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
+                # Enter: 打开选中事件的技术动作编辑对话框
+                if modifiers == Qt.KeyboardModifier.NoModifier:
+                    self.edit_selected_event()
+                    return True
 
             # --- 事件标注 ---
             elif key == Qt.Key.Key_S and modifiers == Qt.KeyboardModifier.ShiftModifier:

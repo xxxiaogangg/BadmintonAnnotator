@@ -11,7 +11,6 @@ TECHNIQUES = {
     "推扑球": ["正手推球", "反手推球", "正手扑球", "反手扑球"],
     "吊球": ["正手吊球", "反手吊球", "头顶吊球"],
     "挑球": ["正手挑球", "反手挑球"],
-    "搓放网": ["搓球", "放网前球"],
     "勾球": ["正手勾球", "反手勾球"],
     "抽球": ["正手抽球", "反手抽球"],
     "高球": ["正手击高球", "头顶手击高球", "反手击高球"],
@@ -25,7 +24,7 @@ TECHNIQUES = {
 }
 
 # 正反手是一个独立的维度
-HAND_TYPES = ["不适用"]
+HAND_TYPES = ["适用", "不适用"]
 
 class TechniqueSelectionDialog(QDialog):
     # ... (从 annotator_v0.6.3.py 完整复制 TechniqueSelectionDialog 类的所有代码) ...
@@ -311,18 +310,41 @@ class DrawingLabel(QLabel):
             painter.drawRect(self.preview_rect_ui)
             
     # --- 坐标转换函数 (保持不变) ---
-    def set_video_dimensions(self, w, h): self.original_video_width, self.original_video_height = w, h
+    def set_video_dimensions(self, w, h): 
+        self.original_video_width, self.original_video_height = w, h
+    
     def ui_coord_to_video_coord_rect(self, ui_rect):
-        x_scale = self.original_video_width / self.width(); y_scale = self.original_video_height / self.height()
-        return QRect(int(ui_rect.x() * x_scale), int(ui_rect.y() * y_scale), int(ui_rect.width() * x_scale), int(ui_rect.height() * y_scale))
+        """将UI坐标矩形转换为视频坐标矩形，带边界检查"""
+        if self.width() == 0 or self.height() == 0 or self.original_video_width == 0 or self.original_video_height == 0:
+            return QRect(0, 0, 0, 0)
+        x_scale = self.original_video_width / self.width()
+        y_scale = self.original_video_height / self.height()
+        return QRect(int(ui_rect.x() * x_scale), int(ui_rect.y() * y_scale), 
+                     int(ui_rect.width() * x_scale), int(ui_rect.height() * y_scale))
+    
     def video_coord_to_ui_coord_rect(self, video_rect):
-        x_scale = self.width() / self.original_video_width; y_scale = self.height() / self.original_video_height
-        return QRect(int(video_rect.x() * x_scale), int(video_rect.y() * y_scale), int(video_rect.width() * x_scale), int(video_rect.height() * y_scale))
+        """将视频坐标矩形转换为UI坐标矩形，带边界检查"""
+        if self.original_video_width == 0 or self.original_video_height == 0:
+            return QRect(0, 0, 0, 0)
+        x_scale = self.width() / self.original_video_width if self.original_video_width > 0 else 1.0
+        y_scale = self.height() / self.original_video_height if self.original_video_height > 0 else 1.0
+        return QRect(int(video_rect.x() * x_scale), int(video_rect.y() * y_scale), 
+                     int(video_rect.width() * x_scale), int(video_rect.height() * y_scale))
+    
     def ui_coord_to_video_coord_point(self, ui_point):
-        x_scale = self.original_video_width / self.width(); y_scale = self.original_video_height / self.height()
+        """将UI坐标点转换为视频坐标点，带边界检查"""
+        if self.width() == 0 or self.height() == 0 or self.original_video_width == 0 or self.original_video_height == 0:
+            return QPoint(0, 0)
+        x_scale = self.original_video_width / self.width()
+        y_scale = self.original_video_height / self.height()
         return QPoint(int(ui_point.x() * x_scale), int(ui_point.y() * y_scale))
+    
     def video_coord_to_ui_coord_point(self, video_point):
-        x_scale = self.width() / self.original_video_width; y_scale = self.height() / self.original_video_height
+        """将视频坐标点转换为UI坐标点，带边界检查"""
+        if self.original_video_width == 0 or self.original_video_height == 0:
+            return QPoint(0, 0)
+        x_scale = self.width() / self.original_video_width if self.original_video_width > 0 else 1.0
+        y_scale = self.height() / self.original_video_height if self.original_video_height > 0 else 1.0
         return QPoint(int(video_point.x() * x_scale), int(video_point.y() * y_scale))
     
 class DrawingLabel1(QLabel):
