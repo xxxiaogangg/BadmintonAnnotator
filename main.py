@@ -1070,7 +1070,11 @@ class MainWindow(QMainWindow):
                     rally_num = rally_counter_map[parent_set_id]
                     score_str = f"{event['details']['score_at_start'][0]}-{event['details']['score_at_start'][1]}"
                     item.setText(0, f"🏸 回合 {rally_num} (比分 {score_str})")
-                    item.setText(1, f"发球: {event['details']['serving_player']}")
+                    # 显示发球人名字和技术动作（与击球事件格式一致）
+                    details = event['details']
+                    serving_player = details.get('serving_player', '待定')
+                    minor = details.get('minor', '待定')
+                    item.setText(1, f"{serving_player}: {minor}")
 
             elif event_type == 'SHOT':
                 details = event['details']
