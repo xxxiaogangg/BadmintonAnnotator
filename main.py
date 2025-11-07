@@ -627,7 +627,16 @@ class MainWindow(QMainWindow):
         cap.release()
         
         self.video_label.set_video_dimensions(width, height)
-        self.video_worker.set_target_size(self.video_label.width(), self.video_label.height())
+        
+        # 修复Windows兼容性：确保video_label有有效尺寸后再设置target_size
+        # 如果video_label的尺寸还是0，使用视频原始尺寸
+        label_width = self.video_label.width()
+        label_height = self.video_label.height()
+        if label_width > 0 and label_height > 0:
+            self.video_worker.set_target_size(label_width, label_height)
+        else:
+            # 如果label尺寸还是0，使用视频原始尺寸（稍后resizeEvent会更新）
+            self.video_worker.set_target_size(width, height)
         
         # 启动自动保存（60秒 = 60000毫秒）
         self.autosave_timer.start(60000)
@@ -635,9 +644,28 @@ class MainWindow(QMainWindow):
         # 无论是新文件还是加载的文件，都显示第一帧
         self.seek_video(0)
 
-    def update_frame(self, frame_num, image):
+    def update_frame(self, frame_num, rgb_array, width, height):
+        """
+        在主线程中更新视频帧显示。
+        
+        重要：严格遵守跨线程GUI编程规则
+        - 所有GUI对象（QImage, QPixmap）的创建都在主线程完成
+        - 使用数据副本确保内存安全，避免后台线程修改数据时影响显示
+        """
         self.current_frame_num = frame_num
-        self.video_label.setPixmap(QPixmap.fromImage(image))
+        
+        # 【关键修复】在主线程中创建QImage和QPixmap
+        # 确保数据是连续的，并使用tobytes()创建独立的数据副本
+        if not rgb_array.flags['C_CONTIGUOUS']:
+            rgb_array = rgb_array.copy()
+        
+        bytes_per_line = 3 * width  # RGB格式，每个像素3字节
+        qt_image = QImage(rgb_array.tobytes(), width, height, bytes_per_line, QImage.Format.Format_RGB888)
+        
+        # 创建QPixmap的副本，确保UI线程使用的图像数据是独立且安全的
+        # 这避免了后台线程更新数据时可能导致的图像损坏
+        pixmap = QPixmap.fromImage(qt_image.copy())
+        self.video_label.setPixmap(pixmap)
         
         # 【重要】每次切换帧时，都必须刷新该帧的标注
         # 但我们不再在此处直接刷新，因为seek和播放的逻辑会处理

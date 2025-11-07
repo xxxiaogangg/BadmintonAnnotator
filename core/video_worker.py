@@ -2,20 +2,26 @@
 
 import cv2
 import time
+import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, pyqtSlot
-from PyQt6.QtGui import QImage
+from PyQt6.QtWidgets import QApplication
 
 class VideoWorker(QObject):
     """
     在后台线程中处理所有视频相关操作的高性能Worker。
     独立于主线程，确保UI永不卡顿。
+    
+    重要：严格遵守跨线程GUI编程规则
+    - 后台线程只处理数据和计算，绝不创建任何GUI对象（如QImage）
+    - 所有GUI对象的创建和操作都在主线程完成
     """
     # --- 信号定义 ---
     # 视频成功加载后发出，传递视频信息给主线程
     video_loaded = pyqtSignal(int, float) # total_frames, fps
     
-    # 每处理好一帧图像后发出
-    frame_ready = pyqtSignal(int, QImage) # frame_number, image
+    # 每处理好一帧图像后发出（只传递原始numpy数组数据，不传递GUI对象）
+    # 参数：frame_number, numpy_array (RGB格式), width, height
+    frame_ready = pyqtSignal(int, object, int, int) # frame_number, rgb_array, width, height
     
     # 发生错误时发出
     error = pyqtSignal(str)
@@ -55,6 +61,11 @@ class VideoWorker(QObject):
 
         while self.is_running:
             # <<< ================== 核心逻辑重构开始 ================== >>>
+            
+            # 【关键修复】强制处理事件队列，防止事件循环"饿死"
+            # 这确保了主线程发来的"暂停"、"跳转"等信号能够及时被处理
+            # 必须在循环最顶部，确保每次迭代都优先处理事件
+            QApplication.processEvents()
             
             # 1. 优先处理跳转请求，无论播放还是暂停
             if self.frame_to_seek >= 0:
@@ -96,16 +107,29 @@ class VideoWorker(QObject):
         self.finished.emit()
 
     def process_and_emit_frame(self, frame, frame_num):
-        """一个辅助函数，用于处理和发送帧，避免代码重复"""
+        """
+        一个辅助函数，用于处理和发送帧，避免代码重复。
+        
+        重要：严格遵守跨线程GUI编程规则
+        - 不在后台线程创建任何GUI对象（如QImage）
+        - 只发送原始numpy数组数据，由主线程负责创建GUI对象
+        """
         if self.target_size:
             frame = cv2.resize(frame, self.target_size, interpolation=cv2.INTER_AREA)
         
+        # 转换为RGB格式（OpenCV默认是BGR）
         rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_image.shape
-        bytes_per_line = ch * w
-        qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         
-        self.frame_ready.emit(frame_num, qt_image)
+        # 确保数据是连续的（在某些操作后可能不连续）
+        if not rgb_image.flags['C_CONTIGUOUS']:
+            rgb_image = rgb_image.copy()
+        
+        h, w = rgb_image.shape[:2]
+        
+        # 【关键修复】只发送numpy数组数据，不创建QImage
+        # QImage的创建必须在主线程完成，这是跨平台兼容性的关键
+        # 使用.copy()确保发送的是独立的数据副本，避免内存共享问题
+        self.frame_ready.emit(frame_num, rgb_image.copy(), w, h)
 
     # --- 以下是供主线程调用的槽函数 ---
     @pyqtSlot(bool)

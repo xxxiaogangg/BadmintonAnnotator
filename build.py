@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 import os, sys, shutil, subprocess, platform
 
-NAME = 'BadmintonAnnotatorV2.0'                # 最终可执行文件的名字
+if platform.system() == 'Windows':
+    os.environ['QT_QPA_PLATFORM'] = 'windows'
+    name = 'BadmintonAnnotatorV2.0.exe'
+else:
+    name = 'BadmintonAnnotatorV2.0'
+              # 最终可执行文件的名字
 ENTRY = 'main.py'              # 你的入口脚本
 ONE_DIR = False                # True=单文件夹, False=单文件
 
@@ -20,7 +25,7 @@ def build():
            '--specpath', '.',
            '--onefile' if not ONE_DIR else '--onedir']
     # macOS 加 .app 包
-    if platform.system() == 'Darwin':
+    if platform.system() == 'Darwin' or platform.system() == 'Windows':
         cmd += ['--windowed']          # 无控制台
     cmd += [ENTRY]
     run(' '.join(cmd))
