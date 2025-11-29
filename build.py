@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 import os, sys, shutil, subprocess, platform
 
-if platform.system() == 'Windows':
-    os.environ['QT_QPA_PLATFORM'] = 'windows'
-    name = 'BadmintonAnnotatorV2.0.exe'
-else:
-    name = 'BadmintonAnnotatorV2.0'
+name = 'BadmintonAnnotatorV2.1.2'
               # 最终可执行文件的名字
 ENTRY = 'main.py'              # 你的入口脚本
 ONE_DIR = False                # True=单文件夹, False=单文件
@@ -18,7 +14,7 @@ def run(cmd):
 
 def build():
     cmd = [sys.executable, '-m', 'PyInstaller',
-           '--name', NAME,
+           '--name', name,
            '--clean', '--noconfirm',
            '--distpath', 'dist',
            '--workpath', 'build',
@@ -32,8 +28,8 @@ def build():
 
     # 可选：把产物统一放进 release/ 方便上传
     os.makedirs('release', exist_ok=True)
-    src = f'dist/{NAME}{".exe" if platform.system()=="Windows" else ""}'
-    dst = f'release/{NAME}-{platform.system()}-{platform.machine()}'
+    src = f'dist/{name}{".exe" if platform.system()=="Windows" else ""}'
+    dst = f'release/{name}-{platform.system()}-{platform.machine()}'
     shutil.move(src, dst)
     print('打包完成:', dst)
 

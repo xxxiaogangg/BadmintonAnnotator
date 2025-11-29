@@ -6,7 +6,7 @@ import cv2
 import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QSlider, QFileDialog, QGroupBox, QTreeWidget, QTreeWidgetItem,
-                             QListWidget, QMenuBar, QMenu, QListWidgetItem, ) # Add QListWidgetItem
+                             QListWidget, QMenuBar, QMenu, QListWidgetItem, QDialog) # Add QListWidgetItem
 from PyQt6.QtGui import QPixmap, QImage, QAction, QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QThread, QRect, QPoint, QTimer, QEvent
 from PyQt6.QtWidgets import (QLabel, QSplitter, QComboBox, QMessageBox, QTreeWidgetItem, 
@@ -1101,13 +1101,26 @@ class MainWindow(QMainWindow):
                     # 显示发球人名字和技术动作（与击球事件格式一致）
                     details = event['details']
                     serving_player = details.get('serving_player', '待定')
-                    minor = details.get('minor', '待定')
-                    item.setText(1, f"{serving_player}: {minor}")
+                    hand = details.get('hand', '待定')
+                    # 根据hand字段决定显示内容：适用时显示技术动作，否则显示hand值（包括"不适用"和"待定"）
+                    if hand == "适用":
+                        technique_display = details.get('minor', '待定')
+                    else:
+                        # hand为"不适用"、"待定"或其他值时，直接显示hand值
+                        technique_display = str(hand) if hand else '待定'
+                    item.setText(1, f"{serving_player}: {technique_display}")
 
             elif event_type == 'SHOT':
                 details = event['details']
                 item.setText(0, f"🎾 击球 (帧: {event['frame']})")
-                item.setText(1, f"{details['player']}: {details['minor']}")
+                hand = details.get('hand', '待定')
+                # 根据hand字段决定显示内容：适用时显示技术动作，否则显示hand值（包括"不适用"和"待定"）
+                if hand == "适用":
+                    technique_display = details.get('minor', '待定')
+                else:
+                    # hand为"不适用"、"待定"或其他值时，直接显示hand值
+                    technique_display = str(hand) if hand else '待定'
+                item.setText(1, f"{details['player']}: {technique_display}")
             
             elif event_type == 'RALLY_END':
                 item.setText(0, f"🏁 回合结束 (帧: {event['frame']})")
@@ -1682,6 +1695,11 @@ class MainWindow(QMainWindow):
                 return True
             elif key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
                 # Enter: 打开选中事件的技术动作编辑对话框
+                # 检查是否有对话框打开，如果有就不拦截Enter键
+                active_window = QApplication.activeWindow()
+                if active_window and isinstance(active_window, QDialog):
+                    # 如果有对话框打开，不拦截Enter键，让对话框自己处理
+                    return False
                 if modifiers == Qt.KeyboardModifier.NoModifier:
                     self.edit_selected_event()
                     return True

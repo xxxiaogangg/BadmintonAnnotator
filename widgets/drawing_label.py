@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QListWidget, 
                              QDialogButtonBox, QWidget, QVBoxLayout, QLabel)
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
-from PyQt6.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QEvent, QObject
 
 TECHNIQUES = {
     "发球": ["正手发网前球", "反手发网前球", "正手发平高球", "反手发平高球", "正手发高远球", "反手发高远球"],
@@ -24,7 +24,24 @@ TECHNIQUES = {
 }
 
 # 正反手是一个独立的维度
-HAND_TYPES = ["适用", "不适用"]
+HAND_TYPES = ["适用", "不适用", "待定"]
+
+
+class EnterKeyFilter(QObject):
+    """事件过滤器类，用于捕获Enter键并接受对话框"""
+    def __init__(self, dialog):
+        super().__init__()
+        self.dialog = dialog
+    
+    def eventFilter(self, source, event):
+        """过滤Enter键事件"""
+        if event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if event.modifiers() == Qt.KeyboardModifier.NoModifier:
+                    self.dialog.accept()
+                    return True
+        return False
+
 
 class TechniqueSelectionDialog(QDialog):
     # ... (从 annotator_v0.6.3.py 完整复制 TechniqueSelectionDialog 类的所有代码) ...
@@ -43,6 +60,16 @@ class TechniqueSelectionDialog(QDialog):
         self.major_list = QListWidget()
         self.minor_list = QListWidget()
         
+        # 为每个列表控件安装事件过滤器，确保Enter键能正确触发对话框接受
+        # 保存过滤器引用，确保它在对话框生命周期内有效
+        self.enter_filter = EnterKeyFilter(self)
+        self.hand_list.installEventFilter(self.enter_filter)
+        self.major_list.installEventFilter(self.enter_filter)
+        self.minor_list.installEventFilter(self.enter_filter)
+        
+        # 也为对话框本身安装事件过滤器，确保无论焦点在哪里都能捕获Enter键
+        self.installEventFilter(self.enter_filter)
+        
         layout.addWidget(self.hand_list)
         layout.addWidget(self.major_list)
         layout.addWidget(self.minor_list)
@@ -60,6 +87,11 @@ class TechniqueSelectionDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        # 设置OK按钮为默认按钮，使Enter键自动触发
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_button:
+            ok_button.setDefault(True)
+            ok_button.setAutoDefault(True)
         v_layout.addStretch()
         v_layout.addWidget(buttons)
         layout.addWidget(button_box_widget)
@@ -123,12 +155,31 @@ class TechniqueSelectionDialog(QDialog):
             
     def set_current_selection(self, selection):
         """根据传入的字典，设置列表的默认选中项"""
-        # ... (通过循环和比较文本来找到并设置 QListWidget 的 currentRow)
-        for i in range(self.hand_list.count()):
-            if self.hand_list.item(i).text() == selection.get('hand'):
-                self.hand_list.setCurrentRow(i)
-                break
-        # ... (同样逻辑用于 major_list 和 minor_list)
+        if not selection:
+            selection = {}
+        
+        # 设置hand_list：默认选中"适用"（第一项，索引0）
+        # 无论传入什么值，都默认选中"适用"
+        if self.hand_list.count() > 0:
+            self.hand_list.setCurrentRow(0)
+        
+        # 设置major_list
+        major_value = selection.get('major', '')
+        if major_value:
+            for i in range(self.major_list.count()):
+                if self.major_list.item(i).text() == major_value:
+                    self.major_list.setCurrentRow(i)
+                    # 触发minor_list更新
+                    self.update_minor_list(self.major_list.item(i))
+                    break
+        
+        # 设置minor_list
+        minor_value = selection.get('minor', '')
+        if minor_value:
+            for i in range(self.minor_list.count()):
+                if self.minor_list.item(i).text() == minor_value:
+                    self.minor_list.setCurrentRow(i)
+                    break
 
     def get_selection(self):
         """返回用户最终选择的结果"""
@@ -136,14 +187,31 @@ class TechniqueSelectionDialog(QDialog):
         major = self.major_list.currentItem().text() if self.major_list.currentItem() else None
         minor = self.minor_list.currentItem().text() if self.minor_list.currentItem() else None
         
-        if not all([hand, major, minor]):
-            return None # 如果有未选择项，则返回None
+        # 如果没有选择hand，返回None
+        if not hand:
+            return None
         
-        return {
-            "hand": hand,
-            "major": major,
-            "minor": minor
-        }
+        # 如果hand为"不适用"或"待定"，不需要选择动作细节，直接返回
+        # major和minor自动设置为与hand相同的值
+        if hand in ["不适用", "待定"]:
+            return {
+                "hand": hand,
+                "major": hand,  # 设置为与hand相同的值
+                "minor": hand   # 设置为与hand相同的值
+            }
+        
+        # 如果hand为"适用"，必须选择动作细节
+        if hand == "适用":
+            if not all([major, minor]):
+                return None  # 如果有未选择项，则返回None
+            return {
+                "hand": hand,
+                "major": major,
+                "minor": minor
+            }
+        
+        # 兜底：其他情况返回None
+        return None
 
 class DrawingLabel(QLabel):
     # --- 信号定义 (保持不变) ---
