@@ -6,11 +6,11 @@ import cv2
 import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QSlider, QFileDialog, QGroupBox, QTreeWidget, QTreeWidgetItem,
-                             QListWidget, QMenuBar, QMenu, QListWidgetItem, QDialog) # Add QListWidgetItem
+                             QListWidget, QMenuBar, QMenu, QListWidgetItem, QDialog)  # Add QListWidgetItem
 from PyQt6.QtGui import QPixmap, QImage, QAction, QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QThread, QRect, QPoint, QTimer, QEvent
-from PyQt6.QtWidgets import (QLabel, QSplitter, QComboBox, QMessageBox, QTreeWidgetItem, 
-                             QTreeWidgetItemIterator, QAbstractItemView)
+from PyQt6.QtWidgets import (QLabel, QSplitter, QComboBox, QMessageBox, QTreeWidgetItem,
+                             QTreeWidgetItemIterator, QAbstractItemView, QStackedWidget)
 
 from core.video_worker import VideoWorker
 from widgets.drawing_label import DrawingLabel, TechniqueSelectionDialog
@@ -35,6 +35,10 @@ class MainWindow(QMainWindow):
         self.last_selected_event_id = None # 跟踪最后选中的事件ID，用于连续调整
         self.play_a_name = ""
         self.play_b_name = ""
+        # 审阅相关
+        self.event_items = {}  # event_id -> QTreeWidgetItem，用于导航和审阅
+        self.review_index_map = {"待定": -1, "不适用": -1}  # 当前在各自序列中的位置
+
         # 自动保存
         self.autosave_timer = QTimer(self)
         self.autosave_timer.timeout.connect(self.autosave_annotations)
@@ -46,28 +50,17 @@ class MainWindow(QMainWindow):
         self._create_menu_bar()
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
-        
+
         main_layout = QHBoxLayout(main_widget)
         left_panel = self._create_left_panel()
-        # --- 创建右侧垂直分割器 ---
-        right_splitter = QSplitter(Qt.Orientation.Vertical)
-        
-        # 创建上下两个面板
-        top_right_panel = self._create_top_right_panel()
-        bottom_right_panel = self._create_bottom_right_panel()
 
-        # 将面板添加到分割器中
-        right_splitter.addWidget(top_right_panel)
-        right_splitter.addWidget(bottom_right_panel)
-
-        # 设置初始高度比例 (上面窄，下面宽)
-        right_splitter.setStretchFactor(0, 1) # 上面比例为1
-        right_splitter.setStretchFactor(1, 3) # 下面比例为3
+        # 创建右侧多页面面板（通过下拉框切换）
+        right_panel = self._create_right_panel()
 
         # 将左右两大块添加到主布局
         main_layout.addWidget(left_panel, 3)      # 左侧视频区，比例为3
-        main_layout.addWidget(right_splitter, 1)  # 右侧整个工具区，比例为1
-        
+        main_layout.addWidget(right_panel, 1)     # 右侧整个工具区，比例为1
+
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
         
@@ -182,12 +175,120 @@ class MainWindow(QMainWindow):
         self.step_back_btn.clicked.connect(lambda: self.step_frames(forward=False))
         self.step_forward_btn.clicked.connect(lambda: self.step_frames(forward=True))
         self.rate_combo.currentTextChanged.connect(self.on_rate_changed)
-
-        # --- 添加快捷键 ---
+        # --- 添加快捷键（如果之前有的话，可在此恢复）---
         # self._create_shortcuts()
 
-
         return left_widget
+
+    def _create_right_panel(self):
+        """创建右侧多功能面板，通过下拉框切换不同页面"""
+        right_widget = QWidget()
+        layout = QVBoxLayout(right_widget)
+        layout.setContentsMargins(5, 5, 5, 5)
+
+        # 顶部：页面选择下拉框
+        switch_layout = QHBoxLayout()
+        switch_label = QLabel("右侧页面：")
+        self.right_page_combo = QComboBox()
+        self.right_page_combo.addItems(["球与运动员", "击球事件", "击球事件审阅", "AI辅助"])
+        self.right_page_combo.currentIndexChanged.connect(self.on_right_page_changed)
+        switch_layout.addWidget(switch_label)
+        switch_layout.addWidget(self.right_page_combo, 1)
+        layout.addLayout(switch_layout)
+
+        # 中部：堆叠窗口，放置不同功能页面
+        self.right_stacked = QStackedWidget()
+
+        # 页面0：球与运动员（沿用原来的右上面板）
+        page_objects = QWidget()
+        page_objects_layout = QVBoxLayout(page_objects)
+        page_objects_layout.setContentsMargins(0, 0, 0, 0)
+        page_objects_layout.addWidget(self._create_top_right_panel())
+        self.right_stacked.addWidget(page_objects)
+
+        # 页面1：击球事件（沿用原来的右下面板）
+        page_events = QWidget()
+        page_events_layout = QVBoxLayout(page_events)
+        page_events_layout.setContentsMargins(0, 0, 0, 0)
+        page_events_layout.addWidget(self._create_bottom_right_panel())
+        self.right_stacked.addWidget(page_events)
+
+        # 页面2：击球事件审阅
+        page_review = QWidget()
+        page_review_layout = QVBoxLayout(page_review)
+
+        # 审阅统计与跳转控制
+        self.review_box = QGroupBox("击球事件审阅")
+        review_layout = QVBoxLayout(self.review_box)
+
+        # 统计信息（分两行：待定一行，不适用一行）
+        self.review_pending_label = QLabel("待定（击球/发球）：0 个，当前位置：0/0")
+        self.review_na_label = QLabel("不适用（击球/发球）：0 个，当前位置：0/0")
+        review_layout.addWidget(self.review_pending_label)
+        review_layout.addWidget(self.review_na_label)
+
+        # 四个跳转按钮
+        review_buttons_layout = QHBoxLayout()
+        self.review_prev_pending_btn = QPushButton("上一个待定")
+        self.review_next_pending_btn = QPushButton("下一个待定")
+        self.review_prev_na_btn = QPushButton("上一个不适用")
+        self.review_next_na_btn = QPushButton("下一个不适用")
+        review_buttons_layout.addWidget(self.review_prev_pending_btn)
+        review_buttons_layout.addWidget(self.review_next_pending_btn)
+        review_buttons_layout.addWidget(self.review_prev_na_btn)
+        review_buttons_layout.addWidget(self.review_next_na_btn)
+        review_layout.addLayout(review_buttons_layout)
+
+        # 连接按钮信号
+        self.review_prev_pending_btn.clicked.connect(
+            lambda: self.navigate_review_events("待定", backward=True)
+        )
+        self.review_next_pending_btn.clicked.connect(
+            lambda: self.navigate_review_events("待定", backward=False)
+        )
+        self.review_prev_na_btn.clicked.connect(
+            lambda: self.navigate_review_events("不适用", backward=True)
+        )
+        self.review_next_na_btn.clicked.connect(
+            lambda: self.navigate_review_events("不适用", backward=False)
+        )
+
+        page_review_layout.addWidget(self.review_box)
+        self.right_stacked.addWidget(page_review)
+
+        layout.addWidget(self.right_stacked)
+
+        # --- 通用事件浏览器（两个页面共用） ---
+        events_box = QGroupBox("事件浏览器")
+        events_layout = QVBoxLayout(events_box)
+        self.event_tree = QTreeWidget()
+        self.event_tree.setHeaderLabels(["事件", "详情"])
+        self.event_tree.itemClicked.connect(self.on_event_tree_item_clicked)
+        self.event_tree.itemDoubleClicked.connect(self.on_event_tree_item_double_clicked)
+        events_layout.addWidget(self.event_tree)
+        events_box.setLayout(events_layout)
+        layout.addWidget(events_box, 1)  # 让事件树占据更多垂直空间
+
+        # 默认显示第一个页面
+        self.right_stacked.setCurrentIndex(0)
+        self.right_page_combo.setCurrentIndex(0)
+
+        return right_widget
+
+    def on_right_page_changed(self, index: int):
+        """右侧页面下拉框切换时，切换堆叠窗口页面"""
+        if hasattr(self, "right_stacked") and 0 <= index < self.right_stacked.count():
+            self.right_stacked.setCurrentIndex(index)
+
+        # 在“击球事件审阅”页面时，让上方堆叠区域高度尽量贴合审阅框，
+        # 这样事件浏览器就会紧贴在审阅框下方，而不是中间留一大块空白。
+        if hasattr(self, "review_box"):
+            if index == 2:  # 第 3 个页面：击球事件审阅
+                h = self.review_box.sizeHint().height() + 20
+                self.right_stacked.setMaximumHeight(h)
+            else:
+                # 恢复为默认最大高度
+                self.right_stacked.setMaximumHeight(16777215)
    
     def _create_top_right_panel(self):
         """创建右上角的面板，用于对象标注"""
@@ -276,31 +377,6 @@ class MainWindow(QMainWindow):
         self.rally_end_btn.clicked.connect(self.add_rally_end_event)
         self.add_shot_btn.clicked.connect(self.add_shot_event)
         layout.addWidget(event_control_box)
-
-        # --- AI 辅助 (占位) ---
-        ai_box = QGroupBox("AI 辅助")
-        ai_layout = QHBoxLayout(ai_box)
-        
-        self.ai_detect_serves_btn = QPushButton("自动检测发球点")
-        self.ai_detect_shots_btn = QPushButton("自动检测击球")
-        
-        self.ai_detect_serves_btn.setEnabled(False) # 默认禁用
-        self.ai_detect_shots_btn.setEnabled(False) # 默认禁用
-        
-        ai_layout.addWidget(self.ai_detect_serves_btn)
-        ai_layout.addWidget(self.ai_detect_shots_btn)
-        layout.addWidget(ai_box)
-
-        # --- 事件浏览器 ---
-        events_box = QGroupBox("事件浏览器")
-        events_layout = QVBoxLayout(events_box)
-        self.event_tree = QTreeWidget()
-        self.event_tree.setHeaderLabels(["事件", "详情"])
-        self.event_tree.itemClicked.connect(self.on_event_tree_item_clicked)
-        self.event_tree.itemDoubleClicked.connect(self.on_event_tree_item_double_clicked)
-        events_layout.addWidget(self.event_tree)
-        events_box.setLayout(events_layout)
-        layout.addWidget(events_box, 1) # 让事件树占据更多垂直空间
         
         return bottom_right_widget
 
@@ -1134,6 +1210,9 @@ class MainWindow(QMainWindow):
             if event_id in expanded_ids:
                 item.setExpanded(True)
 
+        # 更新全局引用，供审阅模块使用
+        self.event_items = all_items
+
         self.event_tree.resizeColumnToContents(0)
         
         # 智能滚动逻辑：优先滚动到指定事件，否则滚动到底部
@@ -1146,6 +1225,9 @@ class MainWindow(QMainWindow):
 
         # 恢复UI更新
         self.event_tree.setUpdatesEnabled(True)
+
+        # 同步更新审阅统计信息
+        self.update_review_stats()
 
     def on_event_tree_item_clicked(self, item, column):
         """槽函数：当事件树中的一项被点击时（逻辑优化版）"""
@@ -1226,11 +1308,112 @@ class MainWindow(QMainWindow):
                     if clicked_event['type'] in ['RALLY_END', 'SET_START']:
                         self.recalculate_scores()
                     print(f"已更新事件 {event_id} 的细节。")
-                    self.refresh_all_ui(scroll_to_event_id=event_id)
-                    # 关闭后保持聚焦与选中项
-                    self._select_event_in_tree(event_id)
-                    self.event_tree.setFocus()
-                    self.set_dirty()
+
+        # 编辑后，可能会改变 hand 字段（待定 / 不适用 / 适用），需要刷新审阅统计
+        self.update_review_stats()
+
+    # ----------------------------- 审阅功能相关 -----------------------------
+    def update_review_stats(self):
+        """统计所有 hand 为 '待定' 或 '不适用' 的击球/发球事件，用于审阅界面"""
+        if not hasattr(self, "review_pending_label") or not hasattr(self, "review_na_label"):
+            return
+
+        events = self.annotations.get("events", [])
+        # 统计：类型为 SHOT 或 RALLY_START（发球），并按 hand 区分
+        self.pending_events = [
+            e for e in events
+            if e.get("type") in ["SHOT", "RALLY_START"]
+            and str(e.get("details", {}).get("hand", "")) == "待定"
+        ]
+        self.na_events = [
+            e for e in events
+            if e.get("type") in ["SHOT", "RALLY_START"]
+            and str(e.get("details", {}).get("hand", "")) == "不适用"
+        ]
+
+        total_pending = len(self.pending_events)
+        total_na = len(self.na_events)
+
+        # 重置当前位置索引
+        if total_pending == 0:
+            self.review_index_map["待定"] = -1
+        else:
+            # 如果之前的位置还在范围内，就保持，否则重置为第一个
+            idx = self.review_index_map.get("待定", -1)
+            self.review_index_map["待定"] = idx if 0 <= idx < total_pending else 0
+
+        if total_na == 0:
+            self.review_index_map["不适用"] = -1
+        else:
+            idx = self.review_index_map.get("不适用", -1)
+            self.review_index_map["不适用"] = idx if 0 <= idx < total_na else 0
+
+        # 显示信息：总数 + 当前所在位置
+        def fmt(current_idx, total):
+            if total == 0 or current_idx < 0:
+                return "0/0"
+            return f"{current_idx + 1}/{total}"
+
+        pending_text = (
+            f"待定（击球/发球）：{total_pending} 个，当前位置：{fmt(self.review_index_map['待定'], total_pending)}"
+        )
+        na_text = (
+            f"不适用（击球/发球）：{total_na} 个，当前位置：{fmt(self.review_index_map['不适用'], total_na)}"
+        )
+        self.review_pending_label.setText(pending_text)
+        self.review_na_label.setText(na_text)
+
+    def navigate_review_events(self, target_hand: str, backward: bool = False):
+        """
+        在审阅界面中，根据 hand 字段（'待定' 或 '不适用'）跳转到上/下一个击球事件。
+        """
+        if target_hand not in ["待定", "不适用"]:
+            return
+
+        # 选择对应的事件列表
+        if target_hand == "待定":
+            events_list = getattr(self, "pending_events", [])
+        else:
+            events_list = getattr(self, "na_events", [])
+
+        if not events_list:
+            return
+
+        idx = self.review_index_map.get(target_hand, -1)
+        if idx < 0:
+            idx = 0
+
+        # 计算新的索引（循环遍历）
+        if backward:
+            idx = (idx - 1) % len(events_list)
+        else:
+            idx = (idx + 1) % len(events_list)
+
+        self.review_index_map[target_hand] = idx
+
+        target_event = events_list[idx]
+        event_id = target_event.get("event_id")
+
+        # 在事件树中找到对应的节点并选中 / 滚动
+        item = self.event_items.get(event_id) if hasattr(self, "event_items") else None
+        if item:
+            # 展开父节点
+            parent = item.parent()
+            while parent:
+                parent.setExpanded(True)
+                parent = parent.parent()
+
+            self.event_tree.setCurrentItem(item)
+            self.event_tree.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+        # 同时让视频跳转到该事件的帧
+        if self.video_worker:
+            frame_num = target_event.get("frame")
+            if frame_num is not None:
+                self.video_worker.seek(frame_num)
+
+        # 更新统计显示（当前位置会变化）
+        self.update_review_stats()
 
     def delete_selected_event(self):
         """删除事件，并对齐Set和Rally的删除逻辑"""
