@@ -37,7 +37,12 @@ class MainWindow(QMainWindow):
         self.play_b_name = ""
         # 审阅相关
         self.event_items = {}  # event_id -> QTreeWidgetItem，用于导航和审阅
-        self.review_index_map = {"待定": -1, "不适用": -1}  # 当前在各自序列中的位置
+        self.review_index_map = {
+            "待定": -1,
+            "不适用": -1,
+            "视角异常": -1,
+            "击球缺帧": -1,
+        }  # 当前在各自序列中的位置
 
         # 自动保存
         self.autosave_timer = QTimer(self)
@@ -227,7 +232,7 @@ class MainWindow(QMainWindow):
         review_layout.addWidget(self.review_pending_label)
         review_layout.addWidget(self.review_na_label)
 
-        # 四个跳转按钮
+        # 四个跳转按钮（hand 维度）
         review_buttons_layout = QHBoxLayout()
         self.review_prev_pending_btn = QPushButton("上一个待定")
         self.review_next_pending_btn = QPushButton("下一个待定")
@@ -238,6 +243,18 @@ class MainWindow(QMainWindow):
         review_buttons_layout.addWidget(self.review_prev_na_btn)
         review_buttons_layout.addWidget(self.review_next_na_btn)
         review_layout.addLayout(review_buttons_layout)
+
+        # 视角跳转按钮（view_desc 维度）
+        review_view_buttons_layout = QHBoxLayout()
+        self.review_prev_view_abnormal_btn = QPushButton("上一个视角异常")
+        self.review_next_view_abnormal_btn = QPushButton("下一个视角异常")
+        self.review_prev_view_missing_btn = QPushButton("上一个击球缺帧")
+        self.review_next_view_missing_btn = QPushButton("下一个击球缺帧")
+        review_view_buttons_layout.addWidget(self.review_prev_view_abnormal_btn)
+        review_view_buttons_layout.addWidget(self.review_next_view_abnormal_btn)
+        review_view_buttons_layout.addWidget(self.review_prev_view_missing_btn)
+        review_view_buttons_layout.addWidget(self.review_next_view_missing_btn)
+        review_layout.addLayout(review_view_buttons_layout)
 
         # 连接按钮信号
         self.review_prev_pending_btn.clicked.connect(
@@ -251,6 +268,18 @@ class MainWindow(QMainWindow):
         )
         self.review_next_na_btn.clicked.connect(
             lambda: self.navigate_review_events("不适用", backward=False)
+        )
+        self.review_prev_view_abnormal_btn.clicked.connect(
+            lambda: self.navigate_review_view_desc("视角异常", backward=True)
+        )
+        self.review_next_view_abnormal_btn.clicked.connect(
+            lambda: self.navigate_review_view_desc("视角异常", backward=False)
+        )
+        self.review_prev_view_missing_btn.clicked.connect(
+            lambda: self.navigate_review_view_desc("击球缺帧", backward=True)
+        )
+        self.review_next_view_missing_btn.clicked.connect(
+            lambda: self.navigate_review_view_desc("击球缺帧", backward=False)
         )
 
         page_review_layout.addWidget(self.review_box)
@@ -834,7 +863,8 @@ class MainWindow(QMainWindow):
                 "score_at_start": list(self.annotations['match_info']['current_set_score']),
                 "hand": "待定",
                 "major": "待定",
-                "minor": "待定"
+                "minor": "待定",
+                "view_desc": "视角正常"
             }
         }
         self.add_event(new_event)
@@ -877,7 +907,8 @@ class MainWindow(QMainWindow):
                 "winner": winner,
                 "hand": "不适用",
                 "major": "待定",
-                "minor": "待定"
+                "minor": "待定",
+                "view_desc": "视角正常"
             }
         }
         self.add_event(new_event)
@@ -978,7 +1009,8 @@ class MainWindow(QMainWindow):
                 "player": "待定", # 球员也设为待定
                 "hand": "待定",
                 "major": "待定",
-                "minor": "待定"
+                "minor": "待定",
+                "view_desc": "视角正常"
             }
         }
         
@@ -1184,7 +1216,8 @@ class MainWindow(QMainWindow):
                     else:
                         # hand为"不适用"、"待定"或其他值时，直接显示hand值
                         technique_display = str(hand) if hand else '待定'
-                    item.setText(1, f"{serving_player}: {technique_display}")
+                    view_desc = details.get('view_desc', '视角正常')
+                    item.setText(1, f"{serving_player}: {technique_display}-{view_desc}")
 
             elif event_type == 'SHOT':
                 details = event['details']
@@ -1196,7 +1229,8 @@ class MainWindow(QMainWindow):
                 else:
                     # hand为"不适用"、"待定"或其他值时，直接显示hand值
                     technique_display = str(hand) if hand else '待定'
-                item.setText(1, f"{details['player']}: {technique_display}")
+                view_desc = details.get('view_desc', '视角正常')
+                item.setText(1, f"{details['player']}: {technique_display}-{view_desc}")
             
             elif event_type == 'RALLY_END':
                 item.setText(0, f"🏁 回合结束 (帧: {event['frame']})")
@@ -1308,6 +1342,12 @@ class MainWindow(QMainWindow):
                     if clicked_event['type'] in ['RALLY_END', 'SET_START']:
                         self.recalculate_scores()
                     print(f"已更新事件 {event_id} 的细节。")
+                    # 跳转到下一条，若无下一条则停留当前
+                    next_event_id = self._get_next_event_id(event_id)
+                    target_event_id = next_event_id or event_id
+                    self.refresh_all_ui(scroll_to_event_id=target_event_id)
+                    self._select_event_in_tree(target_event_id)
+                    self.event_tree.setFocus()
 
         # 编辑后，可能会改变 hand 字段（待定 / 不适用 / 适用），需要刷新审阅统计
         self.update_review_stats()
@@ -1330,9 +1370,22 @@ class MainWindow(QMainWindow):
             if e.get("type") in ["SHOT", "RALLY_START"]
             and str(e.get("details", {}).get("hand", "")) == "不适用"
         ]
+        # 统计视角问题
+        self.view_abnormal_events = [
+            e for e in events
+            if e.get("type") in ["SHOT", "RALLY_START"]
+            and str(e.get("details", {}).get("view_desc", "")) == "视角异常"
+        ]
+        self.view_missing_events = [
+            e for e in events
+            if e.get("type") in ["SHOT", "RALLY_START"]
+            and str(e.get("details", {}).get("view_desc", "")) == "击球缺帧"
+        ]
 
         total_pending = len(self.pending_events)
         total_na = len(self.na_events)
+        total_view_abnormal = len(self.view_abnormal_events)
+        total_view_missing = len(self.view_missing_events)
 
         # 重置当前位置索引
         if total_pending == 0:
@@ -1347,6 +1400,18 @@ class MainWindow(QMainWindow):
         else:
             idx = self.review_index_map.get("不适用", -1)
             self.review_index_map["不适用"] = idx if 0 <= idx < total_na else 0
+
+        if total_view_abnormal == 0:
+            self.review_index_map["视角异常"] = -1
+        else:
+            idx = self.review_index_map.get("视角异常", -1)
+            self.review_index_map["视角异常"] = idx if 0 <= idx < total_view_abnormal else 0
+
+        if total_view_missing == 0:
+            self.review_index_map["击球缺帧"] = -1
+        else:
+            idx = self.review_index_map.get("击球缺帧", -1)
+            self.review_index_map["击球缺帧"] = idx if 0 <= idx < total_view_missing else 0
 
         # 显示信息：总数 + 当前所在位置
         def fmt(current_idx, total):
@@ -1390,6 +1455,58 @@ class MainWindow(QMainWindow):
             idx = (idx + 1) % len(events_list)
 
         self.review_index_map[target_hand] = idx
+
+        target_event = events_list[idx]
+        event_id = target_event.get("event_id")
+
+        # 在事件树中找到对应的节点并选中 / 滚动
+        item = self.event_items.get(event_id) if hasattr(self, "event_items") else None
+        if item:
+            # 展开父节点
+            parent = item.parent()
+            while parent:
+                parent.setExpanded(True)
+                parent = parent.parent()
+
+            self.event_tree.setCurrentItem(item)
+            self.event_tree.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+        # 同时让视频跳转到该事件的帧
+        if self.video_worker:
+            frame_num = target_event.get("frame")
+            if frame_num is not None:
+                self.video_worker.seek(frame_num)
+
+        # 更新统计显示（当前位置会变化）
+        self.update_review_stats()
+
+    def navigate_review_view_desc(self, target_view: str, backward: bool = False):
+        """
+        在审阅界面中，根据视角描述（'视角异常' 或 '击球缺帧'）跳转到上/下一个事件。
+        """
+        if target_view not in ["视角异常", "击球缺帧"]:
+            return
+
+        # 选择对应的事件列表
+        if target_view == "视角异常":
+            events_list = getattr(self, "view_abnormal_events", [])
+        else:
+            events_list = getattr(self, "view_missing_events", [])
+
+        if not events_list:
+            return
+
+        idx = self.review_index_map.get(target_view, -1)
+        if idx < 0:
+            idx = 0
+
+        # 计算新的索引（循环遍历）
+        if backward:
+            idx = (idx - 1) % len(events_list)
+        else:
+            idx = (idx + 1) % len(events_list)
+
+        self.review_index_map[target_view] = idx
 
         target_event = events_list[idx]
         event_id = target_event.get("event_id")
@@ -1595,6 +1712,24 @@ class MainWindow(QMainWindow):
                 self.last_selected_event_id = event_id  # 更新最后选中的事件ID
                 break
             iterator += 1
+
+    def _get_next_event_id(self, current_event_id):
+        """返回事件列表中当前事件的下一条ID，若没有则返回None"""
+        events = self.annotations.get('events', [])
+        for idx, e in enumerate(events):
+            if e.get('event_id') == current_event_id:
+                if idx + 1 < len(events):
+                    return events[idx + 1].get('event_id')
+                break
+        return None
+
+    def _ensure_view_desc_defaults(self):
+        """为历史数据补充视角字段缺省值"""
+        events = self.annotations.get('events', [])
+        for e in events:
+            details = e.get('details')
+            if isinstance(details, dict) and 'view_desc' not in details:
+                details['view_desc'] = "视角正常"
     
     def navigate_to_adjacent_event(self, direction):
         """
@@ -1709,9 +1844,11 @@ class MainWindow(QMainWindow):
                 if clicked_event['type'] in ['RALLY_END', 'SET_START']:
                     self.recalculate_scores()
                 print(f"已更新事件 {event_id} 的细节。")
-                self.refresh_all_ui(scroll_to_event_id=event_id)
-                # 关闭后保持聚焦与选中项
-                self._select_event_in_tree(event_id)
+                next_event_id = self._get_next_event_id(event_id)
+                target_event_id = next_event_id or event_id
+                self.refresh_all_ui(scroll_to_event_id=target_event_id)
+                # 关闭后保持聚焦与选中项，并默认跳转到下一条
+                self._select_event_in_tree(target_event_id)
                 self.event_tree.setFocus()
                 self.set_dirty()
     
@@ -1815,6 +1952,21 @@ class MainWindow(QMainWindow):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     import json
                     self.annotations = json.load(f)
+                # 校正视频路径：若与标注文件所在目录不一致，则更新到当前目录
+                try:
+                    ann_dir = os.path.dirname(file_path)
+                    video_info = self.annotations.get('video_info', {})
+                    filename = video_info.get('filename')
+                    if filename:
+                        expected_path = os.path.normpath(os.path.join(ann_dir, filename))
+                        saved_path = os.path.normpath(video_info.get('path', ''))
+                        if expected_path != saved_path:
+                            self.annotations.setdefault('video_info', {})['path'] = expected_path
+                            print(f"已将视频路径校正为: {expected_path}")
+                except Exception as e:
+                    print(f"校正视频路径时出现问题: {e}")
+                # 为历史数据补充视角字段缺省值
+                self._ensure_view_desc_defaults()
                 self.statusBar().showMessage(f"标注已从 {os.path.basename(file_path)} 加载", 3000)
                 print(f"标注成功从 {file_path} 加载。")
                 

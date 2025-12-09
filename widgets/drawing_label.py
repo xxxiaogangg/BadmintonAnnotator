@@ -23,6 +23,12 @@ TECHNIQUES = {
     ],
 }
 
+VIEWDESCP = ["视角正常", "视角异常", "击球缺帧"]
+
+NOTSUIT = {
+    "不适用": ["凑击球"]
+}
+
 # 正反手是一个独立的维度
 HAND_TYPES = ["适用", "不适用", "待定"]
 
@@ -55,10 +61,11 @@ class TechniqueSelectionDialog(QDialog):
 
         layout = QHBoxLayout(self)
 
-        # 1. 创建三个列表
+        # 1. 创建四个列表（手别/大类/小类/视角）
         self.hand_list = QListWidget()
         self.major_list = QListWidget()
         self.minor_list = QListWidget()
+        self.view_list = QListWidget()
         
         # 为每个列表控件安装事件过滤器，确保Enter键能正确触发对话框接受
         # 保存过滤器引用，确保它在对话框生命周期内有效
@@ -66,6 +73,7 @@ class TechniqueSelectionDialog(QDialog):
         self.hand_list.installEventFilter(self.enter_filter)
         self.major_list.installEventFilter(self.enter_filter)
         self.minor_list.installEventFilter(self.enter_filter)
+        self.view_list.installEventFilter(self.enter_filter)
         
         # 也为对话框本身安装事件过滤器，确保无论焦点在哪里都能捕获Enter键
         self.installEventFilter(self.enter_filter)
@@ -73,12 +81,15 @@ class TechniqueSelectionDialog(QDialog):
         layout.addWidget(self.hand_list)
         layout.addWidget(self.major_list)
         layout.addWidget(self.minor_list)
+        layout.addWidget(self.view_list)
         
         # 2. 填充初始数据
         self.hand_list.addItems(HAND_TYPES)
         self.major_list.addItems(TECHNIQUES.keys())
+        self.view_list.addItems(VIEWDESCP)
         
-        # 3. 连接信号以实现级联更新
+        # 3. 连接信号以实现级联更新（hand变化时切换数据源，major变化时更新minor）
+        self.hand_list.currentItemChanged.connect(self.on_hand_changed)
         self.major_list.currentItemChanged.connect(self.update_minor_list)
         
         # 4. 创建OK和Cancel按钮
@@ -108,7 +119,7 @@ class TechniqueSelectionDialog(QDialog):
 
         # 当前焦点在哪一列
         focus_widget = self.focusWidget()
-        columns = [self.hand_list, self.major_list, self.minor_list]
+        columns = [self.hand_list, self.major_list, self.minor_list, self.view_list]
         try:
             col_index = columns.index(focus_widget) if focus_widget in columns else 0
         except ValueError:
@@ -116,7 +127,7 @@ class TechniqueSelectionDialog(QDialog):
 
         # 左右键切换列
         if key == Qt.Key.Key_Right:
-            if col_index < 2:
+            if col_index < len(columns) - 1:
                 columns[col_index + 1].setFocus()
             return
         if key == Qt.Key.Key_Left:
@@ -145,70 +156,124 @@ class TechniqueSelectionDialog(QDialog):
         # 其他交给父类
         super().keyPressEvent(event)
 
-    def update_minor_list(self, current_item):
-        """当大类变化时，更新小类列表"""
+    def on_hand_changed(self, current_item):
+        """当适用/不适用/待定切换时，切换数据源并重置左右列表"""
+        hand_value = current_item.text() if current_item else HAND_TYPES[0]
+        self._refresh_major_and_minor(hand_value)
+
+    def _get_data_source(self, hand_value):
+        """根据 hand 选择返回对应的数据源"""
+        return NOTSUIT if hand_value == "不适用" else TECHNIQUES
+
+    def _update_minor_list_with_data(self, current_item, data_source, selected_minor=None):
+        """使用指定数据源更新小类列表，并可选恢复之前的选中项"""
         self.minor_list.clear()
-        if current_item:
-            major_tech = current_item.text()
-            minor_techs = TECHNIQUES.get(major_tech, [])
-            self.minor_list.addItems(minor_techs)
+        if not current_item:
+            return
+        major_tech = current_item.text()
+        minor_techs = data_source.get(major_tech, [])
+        self.minor_list.addItems(minor_techs)
+        if selected_minor:
+            for i in range(self.minor_list.count()):
+                if self.minor_list.item(i).text() == selected_minor:
+                    self.minor_list.setCurrentRow(i)
+                    break
+
+    def update_minor_list(self, current_item):
+        """当大类变化时，更新小类列表（随hand切换数据源）"""
+        hand_value = self.hand_list.currentItem().text() if self.hand_list.currentItem() else HAND_TYPES[0]
+        data_source = self._get_data_source(hand_value)
+        self._update_minor_list_with_data(current_item, data_source)
             
     def set_current_selection(self, selection):
         """根据传入的字典，设置列表的默认选中项"""
         if not selection:
             selection = {}
         
-        # 设置hand_list：默认选中"适用"（第一项，索引0）
-        # 无论传入什么值，都默认选中"适用"
+        # 设置hand_list：优先使用传入的hand值，否则默认"适用"
+        hand_value = selection.get('hand') if selection.get('hand') in HAND_TYPES else HAND_TYPES[0]
         if self.hand_list.count() > 0:
-            self.hand_list.setCurrentRow(0)
-        
-        # 设置major_list
-        major_value = selection.get('major', '')
-        if major_value:
-            for i in range(self.major_list.count()):
-                if self.major_list.item(i).text() == major_value:
-                    self.major_list.setCurrentRow(i)
-                    # 触发minor_list更新
-                    self.update_minor_list(self.major_list.item(i))
-                    break
-        
-        # 设置minor_list
-        minor_value = selection.get('minor', '')
-        if minor_value:
-            for i in range(self.minor_list.count()):
-                if self.minor_list.item(i).text() == minor_value:
-                    self.minor_list.setCurrentRow(i)
-                    break
+            self.hand_list.setCurrentRow(HAND_TYPES.index(hand_value))
+        # 按hand类型刷新左右列表，并恢复major/minor的选中状态
+        self._refresh_major_and_minor(hand_value, selection)
+
+    def _refresh_major_and_minor(self, hand_value, selection=None):
+        """根据hand选择刷新大类/小类列表，并在需要时恢复选中项"""
+        selection = selection or {}
+        data_source = self._get_data_source(hand_value)
+        current_major = selection.get('major')
+        current_minor = selection.get('minor')
+        current_view = selection.get('view_desc', VIEWDESCP[0])
+
+        # 暂停信号，避免重复触发
+        self.major_list.blockSignals(True)
+        self.minor_list.blockSignals(True)
+        self.view_list.blockSignals(True)
+
+        self.major_list.clear()
+        self.minor_list.clear()
+        self.view_list.clear()
+
+        majors = list(data_source.keys())
+        self.major_list.addItems(majors)
+        self.view_list.addItems(VIEWDESCP)
+
+        if majors:
+            target_major_row = 0
+            if current_major in majors:
+                target_major_row = majors.index(current_major)
+            self.major_list.setCurrentRow(target_major_row)
+            current_item = self.major_list.item(target_major_row)
+            self._update_minor_list_with_data(current_item, data_source, current_minor)
+
+        self.major_list.blockSignals(False)
+        self.minor_list.blockSignals(False)
+        self.view_list.blockSignals(False)
+
+        # 视角列表恢复选中
+        if self.view_list.count() > 0:
+            target_view_row = VIEWDESCP.index(current_view) if current_view in VIEWDESCP else 0
+            self.view_list.setCurrentRow(target_view_row)
 
     def get_selection(self):
         """返回用户最终选择的结果"""
         hand = self.hand_list.currentItem().text() if self.hand_list.currentItem() else None
         major = self.major_list.currentItem().text() if self.major_list.currentItem() else None
         minor = self.minor_list.currentItem().text() if self.minor_list.currentItem() else None
+        view_desc = self.view_list.currentItem().text() if self.view_list.currentItem() else VIEWDESCP[0]
+        data_source = self._get_data_source(hand) if hand else TECHNIQUES
         
         # 如果没有选择hand，返回None
         if not hand:
             return None
         
-        # 如果hand为"不适用"或"待定"，不需要选择动作细节，直接返回
-        # major和minor自动设置为与hand相同的值
-        if hand in ["不适用", "待定"]:
-            return {
-                "hand": hand,
-                "major": hand,  # 设置为与hand相同的值
-                "minor": hand   # 设置为与hand相同的值
-            }
-        
-        # 如果hand为"适用"，必须选择动作细节
+        # 不适用：使用NOTSUIT的数据源，要求至少选择原因（minor）
+        if hand == "不适用":
+            # major列表只有“不适用”一项，但仍使用当前选中值以保持一致性
+            selected_major = major if major in data_source else "不适用"
+            if minor:
+                return {"hand": hand, "major": selected_major, "minor": minor, "view_desc": view_desc}
+            # 如果没有可选项（理论上不会发生），兜底返回hand
+            if self.minor_list.count() == 0:
+                return {"hand": hand, "major": selected_major, "minor": selected_major, "view_desc": view_desc}
+            return None
+
+        # 适用：必须选择具体的大类和小类
         if hand == "适用":
             if not all([major, minor]):
                 return None  # 如果有未选择项，则返回None
             return {
                 "hand": hand,
                 "major": major,
-                "minor": minor
+                "minor": minor,
+                "view_desc": view_desc
             }
+
+        # 待定：允许选择技术动作，未选则回退为“待定”
+        if hand == "待定":
+            if major and minor:
+                return {"hand": hand, "major": major, "minor": minor, "view_desc": view_desc}
+            return {"hand": hand, "major": "待定", "minor": "待定", "view_desc": view_desc}
         
         # 兜底：其他情况返回None
         return None
