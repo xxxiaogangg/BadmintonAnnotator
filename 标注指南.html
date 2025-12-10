@@ -151,6 +151,43 @@
             color: #666;
         }
 
+        /* 新增的图片排版样式 */
+        .img-gallery {
+            display: flex;
+            flex-wrap: wrap; /* 允许换行 */
+            gap: 15px;       /* 图片之间的间距 */
+            margin-top: 15px;
+            margin-bottom: 20px;
+            justify-content: center; /* 关键：只有一张图时居中，多张时也尽量居中对齐 */
+        }
+
+        .img-item {
+            flex: 1;             /* 让每张卡片平分宽度 */
+            min-width: 200px;    /* 最小宽度，防止手机上挤在一起 */
+            max-width: 320px;    /* 最大宽度，防止单张图时拉得太大 */
+            border: 1px solid #eee;
+            padding: 5px;
+            border-radius: 4px;
+            background: #fff;
+            text-align: center;
+        }
+
+        .img-item img {
+            width: 100%;
+            height: auto;       /* 保持比例 */
+            max-height: 200px;  /* 限制最大高度，防止参差不齐 */
+            object-fit: contain; /* 保持图片内容完整显示 */
+            display: block;
+            margin: 0 auto;
+        }
+
+        .img-caption {
+            font-size: 14px;
+            color: #666;
+            margin-top: 8px;
+            line-height: 1.4;
+        }
+
         footer {
             text-align: center;
             margin-top: 50px;
@@ -176,7 +213,7 @@
             <li><strong>文件管理：</strong> 请将视频文件和对应的标注文件（JSON）放在同一目录下。</li>
             <li><strong>粗略打点：</strong> 先把一局的节奏标完（S局开始 -> R发球 -> I击球 -> E回合结束）。此时不关注技术细节。</li>
             <li><strong>时间检查：</strong> 整体检查一遍击球时间点是否准确（参考下文“标注共识”）。</li>
-            <li><strong>细节补全：</strong> 双击事件列表或使用“审阅模式”，补充正反手、技术动作等细节。</li>
+            <li><strong>细节补全：</strong> 推荐使用“审阅模式”，补充正反手、技术动作等细节。</li>
             <li><strong>保存：</strong> 养成随手 <kbd>Ctrl</kbd> + <kbd>S</kbd> 的好习惯。</li>
         </ol>
     </section>
@@ -243,6 +280,23 @@
             <li>不要标在挥拍过程中，也不要标在球已经飞远了的时候。</li>
         </ul>
 
+        <!-- 新增：三张图片排成一排 -->
+        <div class="img-gallery">
+            <div class="img-item">
+                <!-- 替换 src 为你的图片路径或 Base64 -->
+                <img src="./标注指南/ShotTime1.jpg" alt="太早">
+                <div class="img-caption">❌ 太早：球拍还没接触到球</div>
+            </div>
+            <div class="img-item">
+                <img src="./标注指南/ShotTime2.jpg" alt="正确">
+                <div class="img-caption">✅ 正确：接触瞬间，下一帧球产生形变</div>
+            </div>
+            <div class="img-item">
+                <img src="./标注指南/ShotTime3.jpg" alt="太晚">
+                <div class="img-caption">❌ 太晚：球已经飞出一段距离</div>
+            </div>
+        </div>
+
         <h3>3.2 标注回合结束节点 (Rally End)</h3>
         <p>分三种情况处理：</p>
         <ol>
@@ -268,9 +322,35 @@
         <h3>3.3 处理切画面/回放丢失 (Cut Scenes)</h3>
         <p>这是比赛视频中常见的问题（上一局回放还没播完，下一局已经发球打了几拍了）。</p>
         <ul>
-            <li><strong>对齐原则：</strong> 当直播画面切回比赛现场，出现<strong>第一个清晰击球画面</strong>时，此时的人物身份必须对上（谁在击球，谁在跑动）。</li>
-            <li><strong>丢失部分：</strong> 对于回放期间被“吃掉”的那些击球(包括击球时刻前面10-20帧处于回放环节，不可见），统一标注技术细节为 <span class="important">不适用</span> - <span class="important">缺帧</span>。</li>
+            <li><strong>对齐原则：</strong> 当直播画面切回比赛现场，出现<strong>第一个清晰击球画面</strong>时，此时的人物身份必须对上（谁在击球，谁在跑动）。之前凑数的击球统一标注技术细节为 <span class="important">不适用</span> - <span class="important">凑帧数</span>。</li>
+            <li><strong>丢失部分：</strong> 对于回放期间被“吃掉”的那些击球(包括击球时刻前面10-20帧处于回放环节，不可见），统一在第四列视角选项中选择 <span class="important">击球缺帧</span>。</li>
+            <li><strong>视角变化：</strong> 对于非正常的俯视视角，统一在第四列视角选项中选择 <span class="important">视角异常</span>。</li>
         </ul>
+
+        <!-- 新增：GIF/图片展示区 -->
+        <!-- 样式说明：
+             如果只有 1 个 .img-item，它会自动居中。
+             如果有 2 个或 3 个，它会自动横向排列。
+        -->
+        <div class="img-gallery">
+            <div class="img-item" style="max-width: 400px;"> <!-- 单张图时稍微宽一点好看 -->
+                <!-- 替换 src 为你的 GIF 路径或 Base64 -->
+                <img src="./标注指南/2025年全英羽毛球公开赛-安洗莹vs王祉怡_frame_144921.gif" alt="缺帧演示">
+                <div class="img-caption">缺帧演示：击球前被回放遮挡</div>
+            </div>
+            <div class="img-item" style="max-width: 400px;"> <!-- 单张图时稍微宽一点好看 -->
+                <!-- 替换 src 为你的 GIF 路径或 Base64 -->
+                <img src="./标注指南/ViewError.jpg" alt="缺帧演示">
+                <div class="img-caption">视角异常：非正常俯视视角</div>
+            </div>
+            
+            <!-- 如果想加更多图，复制下面的代码块放在这里即可 -->
+            <!-- 
+            <div class="img-item">
+                <img src="..." alt="...">
+                <div class="img-caption">描述文字</div>
+            </div> 
+            -->
     </section>
 
     <!-- 4. 疑难动作图解 (GIF展示) -->
