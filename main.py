@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
         switch_layout = QHBoxLayout()
         switch_label = QLabel("右侧页面：")
         self.right_page_combo = QComboBox()
-        self.right_page_combo.addItems(["球与运动员", "击球事件", "击球事件审阅", "AI辅助"])
+        self.right_page_combo.addItems(["球与运动员", "标注击球事件", "击球事件审阅", "AI辅助"])
         self.right_page_combo.currentIndexChanged.connect(self.on_right_page_changed)
         switch_layout.addWidget(switch_label)
         switch_layout.addWidget(self.right_page_combo, 1)
@@ -1315,6 +1315,14 @@ class MainWindow(QMainWindow):
                 return
             self._tech_dialog_open = True
             dialog = TechniqueSelectionDialog(clicked_event['details'], self)
+            
+            # 在"标注击球事件"页面下，默认第一列选择"适用"
+            if hasattr(self, 'right_page_combo') and self.right_page_combo.currentIndex() == 1:
+                # 索引1对应"标注击球事件"页面
+                for i in range(dialog.hand_list.count()):
+                    if dialog.hand_list.item(i).text() == "适用":
+                        dialog.hand_list.setCurrentRow(i)
+                        break
             
             if event_type == 'RALLY_START':
                 dialog.setWindowTitle("编辑发球技术")
