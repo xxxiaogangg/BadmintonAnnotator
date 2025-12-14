@@ -114,11 +114,11 @@ def create_gifs_and_divs(video_path, target_frames, output_txt, output_folder='o
 # ================= 使用示例 =================
 if __name__ == "__main__":
     # 1. 替换成你的视频路径
-    my_video = "/home/gang/gang_study/Data/Badminton_data/InHome/BWF/女单/2025年全英羽毛球公开赛-安洗莹vs王祉怡.mp4" 
+    my_video = "/home/gang/gang_study/Data/Badminton_data/InHome/BWF/女单/2025年韩国羽毛球公开赛-山口茜vs安洗莹.mp4" 
     # 2. 目标帧号列表
     # 25全英女单-安vs王 Set3 rally12 144921 击球前帧数缺失
     targets = [16560, 28089, 29925, 39596, 68605, 72991, 144921] 
-    targets = [73507, ] 
+    targets = [13277, 14809, 23351, 26468, 27640, 28397, 33460, 40044, 45586, 53442, 65622, 66766, 79325]
     
     # 3. 运行
     create_gifs_and_divs(my_video, targets, output_txt=0)
