@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
         switch_layout = QHBoxLayout()
         switch_label = QLabel("右侧页面：")
         self.right_page_combo = QComboBox()
-        self.right_page_combo.addItems(["球与运动员", "击球事件", "击球事件审阅", "AI辅助"])
+        self.right_page_combo.addItems(["球与运动员", "标注击球事件", "击球事件审阅", "AI辅助"])
         self.right_page_combo.currentIndexChanged.connect(self.on_right_page_changed)
         switch_layout.addWidget(switch_label)
         switch_layout.addWidget(self.right_page_combo, 1)
@@ -1316,6 +1316,14 @@ class MainWindow(QMainWindow):
             self._tech_dialog_open = True
             dialog = TechniqueSelectionDialog(clicked_event['details'], self)
             
+            # 在"标注击球事件"页面下，默认第一列选择"适用"
+            if hasattr(self, 'right_page_combo') and self.right_page_combo.currentIndex() == 1:
+                # 索引1对应"标注击球事件"页面
+                for i in range(dialog.hand_list.count()):
+                    if dialog.hand_list.item(i).text() == "适用":
+                        dialog.hand_list.setCurrentRow(i)
+                        break
+            
             if event_type == 'RALLY_START':
                 dialog.setWindowTitle("编辑发球技术")
                 # 预选 "发球"
@@ -1348,6 +1356,12 @@ class MainWindow(QMainWindow):
                     self.refresh_all_ui(scroll_to_event_id=target_event_id)
                     self._select_event_in_tree(target_event_id)
                     self.event_tree.setFocus()
+                    
+                    # 让视频画面也跳转到目标事件的帧
+                    if self.video_worker and target_event_id:
+                        target_event = next((e for e in self.annotations['events'] if e['event_id'] == target_event_id), None)
+                        if target_event and 'frame' in target_event:
+                            self.video_worker.seek(target_event['frame'])
 
         # 编辑后，可能会改变 hand 字段（待定 / 不适用 / 适用），需要刷新审阅统计
         self.update_review_stats()
@@ -1787,17 +1801,12 @@ class MainWindow(QMainWindow):
     
     def edit_selected_event(self):
         """打开选中事件的技术动作编辑对话框"""
-        # 获取当前选中的事件ID
-        event_id = None
+        # 获取当前选中的事件ID（必须要有选中项，不使用last_selected_event_id）
         selected_item = self.event_tree.currentItem()
+        if not selected_item:
+            return
         
-        if selected_item:
-            event_id = selected_item.data(0, Qt.ItemDataRole.UserRole + 1)
-        
-        # 如果当前没有选中的项，使用最后选中的事件ID
-        if not event_id and self.last_selected_event_id:
-            event_id = self.last_selected_event_id
-        
+        event_id = selected_item.data(0, Qt.ItemDataRole.UserRole + 1)
         if not event_id:
             return
         
@@ -1818,6 +1827,14 @@ class MainWindow(QMainWindow):
             return
         self._tech_dialog_open = True
         dialog = TechniqueSelectionDialog(clicked_event['details'], self)
+        
+        # 在"标注击球事件"页面下，默认第一列选择"适用"
+        if hasattr(self, 'right_page_combo') and self.right_page_combo.currentIndex() == 1:
+            # 索引1对应"标注击球事件"页面
+            for i in range(dialog.hand_list.count()):
+                if dialog.hand_list.item(i).text() == "适用":
+                    dialog.hand_list.setCurrentRow(i)
+                    break
         
         if event_type == 'RALLY_START':
             dialog.setWindowTitle("编辑发球技术")
@@ -1851,6 +1868,12 @@ class MainWindow(QMainWindow):
                 self._select_event_in_tree(target_event_id)
                 self.event_tree.setFocus()
                 self.set_dirty()
+                
+                # 让视频画面也跳转到目标事件的帧
+                if self.video_worker and target_event_id:
+                    target_event = next((e for e in self.annotations['events'] if e['event_id'] == target_event_id), None)
+                    if target_event and 'frame' in target_event:
+                        self.video_worker.seek(target_event['frame'])
     
     def _select_event_in_tree(self, event_id):
         """在事件树中选中指定的事件"""
