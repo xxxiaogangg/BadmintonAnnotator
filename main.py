@@ -6,11 +6,11 @@ import cv2
 import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QSlider, QFileDialog, QGroupBox, QTreeWidget, QTreeWidgetItem,
-                             QListWidget, QMenuBar, QMenu, QListWidgetItem, QDialog)  # Add QListWidgetItem
-from PyQt6.QtGui import QPixmap, QImage, QAction, QKeySequence, QShortcut
+                             QListWidget, QMenuBar, QMenu, QListWidgetItem, QDialog, QCheckBox)  # Add QListWidgetItem
+from PyQt6.QtGui import QPixmap, QImage, QAction, QKeySequence, QShortcut, QIntValidator
 from PyQt6.QtCore import Qt, QThread, QRect, QPoint, QTimer, QEvent
 from PyQt6.QtWidgets import (QLabel, QSplitter, QComboBox, QMessageBox, QTreeWidgetItem,
-                             QTreeWidgetItemIterator, QAbstractItemView, QStackedWidget)
+                             QTreeWidgetItemIterator, QAbstractItemView, QStackedWidget, QLineEdit)
 
 from core.video_worker import VideoWorker
 from widgets.drawing_label import DrawingLabel, TechniqueSelectionDialog
@@ -35,6 +35,8 @@ class MainWindow(QMainWindow):
         self.last_selected_event_id = None # 跟踪最后选中的事件ID，用于连续调整
         self.play_a_name = ""
         self.play_b_name = ""
+        self.shot_loop_enabled = False
+        self.shot_loop_bounds = None
         # 审阅相关
         self.event_items = {}  # event_id -> QTreeWidgetItem，用于导航和审阅
         self.review_index_map = {
@@ -42,6 +44,7 @@ class MainWindow(QMainWindow):
             "不适用": -1,
             "视角异常": -1,
             "击球缺帧": -1,
+            "非常规动作": -1,
         }  # 当前在各自序列中的位置
 
         # 自动保存
@@ -196,9 +199,15 @@ class MainWindow(QMainWindow):
         switch_label = QLabel("右侧页面：")
         self.right_page_combo = QComboBox()
         self.right_page_combo.addItems(["球与运动员", "标注击球事件", "击球事件审阅", "AI辅助"])
+        self.right_page_combo.setMaximumWidth(180)
         self.right_page_combo.currentIndexChanged.connect(self.on_right_page_changed)
+        self.shot_loop_toggle = QCheckBox("击球循环")
+        self.shot_loop_toggle.setToolTip("开启后，在两次击球之间循环播放")
+        self.shot_loop_toggle.toggled.connect(self.on_shot_loop_toggled)
         switch_layout.addWidget(switch_label)
-        switch_layout.addWidget(self.right_page_combo, 1)
+        switch_layout.addWidget(self.right_page_combo)
+        switch_layout.addWidget(self.shot_loop_toggle)
+        switch_layout.addStretch()
         layout.addLayout(switch_layout)
 
         # 中部：堆叠窗口，放置不同功能页面
@@ -227,60 +236,44 @@ class MainWindow(QMainWindow):
         review_layout = QVBoxLayout(self.review_box)
 
         # 统计信息（分两行：待定一行，不适用一行）
-        self.review_pending_label = QLabel("待定（击球/发球）：0 个，当前位置：0/0")
-        self.review_na_label = QLabel("不适用（击球/发球）：0 个，当前位置：0/0")
+        self.review_pending_label = QLabel("待定:0 | 不适用:0 | 视角异常:0 | 击球缺帧:0 | 非常规动作:0")
+        self.review_na_label = QLabel("当前位置: 0/0")
         review_layout.addWidget(self.review_pending_label)
         review_layout.addWidget(self.review_na_label)
 
-        # 四个跳转按钮（hand 维度）
-        review_buttons_layout = QHBoxLayout()
-        self.review_prev_pending_btn = QPushButton("上一个待定")
-        self.review_next_pending_btn = QPushButton("下一个待定")
-        self.review_prev_na_btn = QPushButton("上一个不适用")
-        self.review_next_na_btn = QPushButton("下一个不适用")
-        review_buttons_layout.addWidget(self.review_prev_pending_btn)
-        review_buttons_layout.addWidget(self.review_next_pending_btn)
-        review_buttons_layout.addWidget(self.review_prev_na_btn)
-        review_buttons_layout.addWidget(self.review_next_na_btn)
-        review_layout.addLayout(review_buttons_layout)
+        # 审阅跳转控制
+        review_filter_layout = QHBoxLayout()
+        self.review_filter_combo = QComboBox()
+        self.review_filter_combo.addItems(["待定", "不适用", "视角异常", "击球缺帧", "非常规动作"])
+        self.review_filter_combo.currentIndexChanged.connect(self._update_review_position_label)
+        self.review_prev_btn = QPushButton("上一个")
+        self.review_next_btn = QPushButton("下一个")
+        review_filter_layout.addWidget(self.review_filter_combo, 1)
+        review_filter_layout.addWidget(self.review_prev_btn)
+        review_filter_layout.addWidget(self.review_next_btn)
+        review_layout.addLayout(review_filter_layout)
 
-        # 视角跳转按钮（view_desc 维度）
-        review_view_buttons_layout = QHBoxLayout()
-        self.review_prev_view_abnormal_btn = QPushButton("上一个视角异常")
-        self.review_next_view_abnormal_btn = QPushButton("下一个视角异常")
-        self.review_prev_view_missing_btn = QPushButton("上一个击球缺帧")
-        self.review_next_view_missing_btn = QPushButton("下一个击球缺帧")
-        review_view_buttons_layout.addWidget(self.review_prev_view_abnormal_btn)
-        review_view_buttons_layout.addWidget(self.review_next_view_abnormal_btn)
-        review_view_buttons_layout.addWidget(self.review_prev_view_missing_btn)
-        review_view_buttons_layout.addWidget(self.review_next_view_missing_btn)
-        review_layout.addLayout(review_view_buttons_layout)
+        review_jump_layout = QHBoxLayout()
+        review_jump_label = QLabel("跳转到帧:")
+        self.review_jump_input = QLineEdit()
+        self.review_jump_input.setPlaceholderText("帧号")
+        self.review_jump_input.setFixedWidth(80)
+        self.review_jump_validator = QIntValidator(0, 0, self)
+        self.review_jump_input.setValidator(self.review_jump_validator)
+        self.review_jump_btn = QPushButton("跳转")
+        review_jump_layout.addWidget(review_jump_label)
+        review_jump_layout.addWidget(self.review_jump_input)
+        review_jump_layout.addWidget(self.review_jump_btn)
+        review_layout.addLayout(review_jump_layout)
 
         # 连接按钮信号
-        self.review_prev_pending_btn.clicked.connect(
-            lambda: self.navigate_review_events("待定", backward=True)
+        self.review_prev_btn.clicked.connect(
+            lambda: self.navigate_review_by_filter(backward=True)
         )
-        self.review_next_pending_btn.clicked.connect(
-            lambda: self.navigate_review_events("待定", backward=False)
+        self.review_next_btn.clicked.connect(
+            lambda: self.navigate_review_by_filter(backward=False)
         )
-        self.review_prev_na_btn.clicked.connect(
-            lambda: self.navigate_review_events("不适用", backward=True)
-        )
-        self.review_next_na_btn.clicked.connect(
-            lambda: self.navigate_review_events("不适用", backward=False)
-        )
-        self.review_prev_view_abnormal_btn.clicked.connect(
-            lambda: self.navigate_review_view_desc("视角异常", backward=True)
-        )
-        self.review_next_view_abnormal_btn.clicked.connect(
-            lambda: self.navigate_review_view_desc("视角异常", backward=False)
-        )
-        self.review_prev_view_missing_btn.clicked.connect(
-            lambda: self.navigate_review_view_desc("击球缺帧", backward=True)
-        )
-        self.review_next_view_missing_btn.clicked.connect(
-            lambda: self.navigate_review_view_desc("击球缺帧", backward=False)
-        )
+        self.review_jump_btn.clicked.connect(self.jump_to_frame_from_review)
 
         page_review_layout.addWidget(self.review_box)
         self.right_stacked.addWidget(page_review)
@@ -718,6 +711,8 @@ class MainWindow(QMainWindow):
     def on_video_loaded(self, total_frames, fps):
         print(f"视频加载成功: {total_frames} 帧, {fps} FPS")
         self.slider.setRange(0, total_frames - 1)
+        if hasattr(self, "review_jump_validator"):
+            self.review_jump_validator.setTop(max(0, total_frames - 1))
         
         # 更新视频FPS，用于步进间隔计算
         self.video_fps = fps if fps > 0 else 30
@@ -785,12 +780,23 @@ class MainWindow(QMainWindow):
         self.slider.setValue(frame_num)
         self.slider.blockSignals(False)
         self.update_time_label()
+        if self.video_worker and self.video_worker.is_playing and self.shot_loop_enabled and self.shot_loop_bounds:
+            start_frame, end_frame = self.shot_loop_bounds
+            if frame_num >= end_frame:
+                self.video_worker.seek(start_frame)
 
-    def seek_video(self, frame_num):
-        if self.video_worker.is_playing:
+    def seek_video(self, frame_num, keep_playing: bool = False):
+        was_playing = False
+        if self.video_worker:
+            was_playing = self.video_worker.is_playing
+        if self.video_worker.is_playing and not keep_playing:
             self.toggle_play_pause()
         self.video_worker.seek(frame_num)
         self.refresh_ui_for_current_frame()
+        self._sync_event_selection_to_frame(frame_num)
+        if keep_playing and was_playing and self.video_worker and not self.video_worker.is_playing:
+            self.video_worker.set_playing(True)
+            self.play_pause_btn.setText("❚❚ 暂停")
 
     def toggle_play_pause(self):
         if self.video_worker and self.video_thread.isRunning():
@@ -798,8 +804,70 @@ class MainWindow(QMainWindow):
                 self.video_worker.set_playing(False)
                 self.play_pause_btn.setText("▶ 播放")
             else:
+                if self.shot_loop_enabled:
+                    self._update_shot_loop_bounds()
+                    if self.shot_loop_bounds:
+                        start_frame, _ = self.shot_loop_bounds
+                        if self.current_frame_num != start_frame:
+                            self.video_worker.seek(start_frame)
                 self.video_worker.set_playing(True)
                 self.play_pause_btn.setText("❚❚ 暂停")
+
+    def on_shot_loop_toggled(self, checked):
+        self.shot_loop_enabled = checked
+        if not checked:
+            self.shot_loop_bounds = None
+            return
+        self._update_shot_loop_bounds()
+        if self.video_worker and self.video_worker.is_playing and self.shot_loop_bounds:
+            start_frame, _ = self.shot_loop_bounds
+            if self.current_frame_num != start_frame:
+                self.video_worker.seek(start_frame)
+
+    def _get_hit_events_sorted(self):
+        events = self.annotations.get('events', [])
+        hit_events = [
+            e for e in events
+            if e.get('type') in ['SHOT', 'RALLY_START'] and 'frame' in e
+        ]
+        return sorted(hit_events, key=lambda e: e.get('frame', 0))
+
+    def _resolve_shot_loop_bounds(self):
+        hit_events = self._get_hit_events_sorted()
+        if not hit_events:
+            return None
+
+        start_index = None
+        if self.last_selected_event_id:
+            for i, event in enumerate(hit_events):
+                if event.get('event_id') == self.last_selected_event_id:
+                    start_index = i
+                    break
+
+        if start_index is None:
+            for i, event in enumerate(hit_events):
+                if event.get('frame', -1) <= self.current_frame_num:
+                    start_index = i
+                else:
+                    break
+            if start_index is None:
+                start_index = 0
+
+        if start_index + 1 >= len(hit_events):
+            return None
+
+        start_frame = hit_events[start_index].get('frame')
+        end_frame = hit_events[start_index + 1].get('frame')
+        if start_frame is None or end_frame is None or end_frame <= start_frame:
+            return None
+
+        return (start_frame, end_frame)
+
+    def _update_shot_loop_bounds(self):
+        if not self.shot_loop_enabled:
+            self.shot_loop_bounds = None
+            return
+        self.shot_loop_bounds = self._resolve_shot_loop_bounds()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1273,6 +1341,8 @@ class MainWindow(QMainWindow):
 
         # 更新最后选中的事件ID，用于连续调整功能
         self.last_selected_event_id = event_id
+        if self.shot_loop_enabled:
+            self._update_shot_loop_bounds()
 
         # 找到被点击的事件对象
         clicked_event = next((e for e in self.annotations['events'] if e['event_id'] == event_id), None)
@@ -1302,6 +1372,8 @@ class MainWindow(QMainWindow):
         
         # 更新最后选中的事件ID，用于连续调整功能
         self.last_selected_event_id = event_id
+        if self.shot_loop_enabled:
+            self._update_shot_loop_bounds()
 
         clicked_event = next((e for e in self.annotations['events'] if e['event_id'] == event_id), None)
         if not clicked_event: return
@@ -1395,11 +1467,18 @@ class MainWindow(QMainWindow):
             if e.get("type") in ["SHOT", "RALLY_START"]
             and str(e.get("details", {}).get("view_desc", "")) == "击球缺帧"
         ]
+        self.unusual_events = [
+            e for e in events
+            if e.get("type") in ["SHOT", "RALLY_START"]
+            and str(e.get("details", {}).get("hand", "")) == "不适用"
+            and str(e.get("details", {}).get("minor", "")) == "非常规动作"
+        ]
 
         total_pending = len(self.pending_events)
         total_na = len(self.na_events)
         total_view_abnormal = len(self.view_abnormal_events)
         total_view_missing = len(self.view_missing_events)
+        total_unusual = len(self.unusual_events)
 
         # 重置当前位置索引
         if total_pending == 0:
@@ -1427,20 +1506,106 @@ class MainWindow(QMainWindow):
             idx = self.review_index_map.get("击球缺帧", -1)
             self.review_index_map["击球缺帧"] = idx if 0 <= idx < total_view_missing else 0
 
-        # 显示信息：总数 + 当前所在位置
+        if total_unusual == 0:
+            self.review_index_map["非常规动作"] = -1
+        else:
+            idx = self.review_index_map.get("非常规动作", -1)
+            self.review_index_map["非常规动作"] = idx if 0 <= idx < total_unusual else 0
+
+        counts_text = (
+            f"待定:{total_pending} | 不适用:{total_na} | 视角异常:{total_view_abnormal} | "
+            f"击球缺帧:{total_view_missing} | 非常规动作:{total_unusual}"
+        )
+        self.review_pending_label.setText(counts_text)
+        self._update_review_position_label()
+
+    def _find_nearest_event_id_by_frame(self, frame_num):
+        """返回与frame_num最近的事件ID，若不存在则返回None"""
+        events = self.annotations.get('events', [])
+        if not events:
+            return None
+        nearest_id = None
+        nearest_dist = None
+        for event in events:
+            event_frame = event.get('frame')
+            if event_frame is None:
+                continue
+            dist = abs(event_frame - frame_num)
+            if nearest_dist is None or dist < nearest_dist:
+                nearest_dist = dist
+                nearest_id = event.get('event_id')
+        return nearest_id
+
+    def _sync_event_selection_to_frame(self, frame_num):
+        """让事件树选中与当前帧最接近的事件"""
+        if not hasattr(self, "event_tree"):
+            return
+        event_id = self._find_nearest_event_id_by_frame(frame_num)
+        if not event_id:
+            return
+        current_item = self.event_tree.currentItem()
+        current_id = current_item.data(0, Qt.ItemDataRole.UserRole + 1) if current_item else None
+        if event_id != current_id:
+            self._select_event_in_tree(event_id)
+
+    def _update_review_position_label(self):
+        """根据当前筛选项刷新当前位置显示"""
+        if not hasattr(self, "review_filter_combo") or not hasattr(self, "review_na_label"):
+            return
+
         def fmt(current_idx, total):
             if total == 0 or current_idx < 0:
                 return "0/0"
             return f"{current_idx + 1}/{total}"
 
-        pending_text = (
-            f"待定（击球/发球）：{total_pending} 个，当前位置：{fmt(self.review_index_map['待定'], total_pending)}"
-        )
-        na_text = (
-            f"不适用（击球/发球）：{total_na} 个，当前位置：{fmt(self.review_index_map['不适用'], total_na)}"
-        )
-        self.review_pending_label.setText(pending_text)
-        self.review_na_label.setText(na_text)
+        target = self.review_filter_combo.currentText()
+        if target == "待定":
+            total = len(getattr(self, "pending_events", []))
+            idx = self.review_index_map.get("待定", -1)
+        elif target == "不适用":
+            total = len(getattr(self, "na_events", []))
+            idx = self.review_index_map.get("不适用", -1)
+        elif target == "视角异常":
+            total = len(getattr(self, "view_abnormal_events", []))
+            idx = self.review_index_map.get("视角异常", -1)
+        elif target == "击球缺帧":
+            total = len(getattr(self, "view_missing_events", []))
+            idx = self.review_index_map.get("击球缺帧", -1)
+        elif target == "非常规动作":
+            total = len(getattr(self, "unusual_events", []))
+            idx = self.review_index_map.get("非常规动作", -1)
+        else:
+            total = 0
+            idx = -1
+
+        self.review_na_label.setText(f"当前位置({target}): {fmt(idx, total)}")
+
+    def navigate_review_by_filter(self, backward: bool = False):
+        """根据当前筛选项在审阅列表中跳转"""
+        if not hasattr(self, "review_filter_combo"):
+            return
+        target = self.review_filter_combo.currentText()
+        if target in ["待定", "不适用"]:
+            self.navigate_review_events(target, backward=backward)
+        elif target in ["视角异常", "击球缺帧"]:
+            self.navigate_review_view_desc(target, backward=backward)
+        elif target == "非常规动作":
+            self.navigate_review_unusual(backward=backward)
+
+    def jump_to_frame_from_review(self):
+        """从审阅面板输入框跳转到指定帧"""
+        if not self.video_worker or not hasattr(self, "review_jump_input"):
+            return
+        text = self.review_jump_input.text().strip()
+        if not text:
+            return
+        try:
+            target_frame = int(text)
+        except ValueError:
+            return
+        max_frame = self.slider.maximum()
+        target_frame = max(0, min(target_frame, max_frame))
+        self.seek_video(target_frame)
 
     def navigate_review_events(self, target_hand: str, backward: bool = False):
         """
@@ -1474,22 +1639,14 @@ class MainWindow(QMainWindow):
         event_id = target_event.get("event_id")
 
         # 在事件树中找到对应的节点并选中 / 滚动
-        item = self.event_items.get(event_id) if hasattr(self, "event_items") else None
-        if item:
-            # 展开父节点
-            parent = item.parent()
-            while parent:
-                parent.setExpanded(True)
-                parent = parent.parent()
-
-            self.event_tree.setCurrentItem(item)
-            self.event_tree.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+        if event_id:
+            self._select_event_in_tree(event_id)
 
         # 同时让视频跳转到该事件的帧
         if self.video_worker:
             frame_num = target_event.get("frame")
             if frame_num is not None:
-                self.video_worker.seek(frame_num)
+                self.seek_video(frame_num, keep_playing=self.video_worker.is_playing)
 
         # 更新统计显示（当前位置会变化）
         self.update_review_stats()
@@ -1526,24 +1683,46 @@ class MainWindow(QMainWindow):
         event_id = target_event.get("event_id")
 
         # 在事件树中找到对应的节点并选中 / 滚动
-        item = self.event_items.get(event_id) if hasattr(self, "event_items") else None
-        if item:
-            # 展开父节点
-            parent = item.parent()
-            while parent:
-                parent.setExpanded(True)
-                parent = parent.parent()
-
-            self.event_tree.setCurrentItem(item)
-            self.event_tree.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+        if event_id:
+            self._select_event_in_tree(event_id)
 
         # 同时让视频跳转到该事件的帧
         if self.video_worker:
             frame_num = target_event.get("frame")
             if frame_num is not None:
-                self.video_worker.seek(frame_num)
+                self.seek_video(frame_num, keep_playing=self.video_worker.is_playing)
 
         # 更新统计显示（当前位置会变化）
+        self.update_review_stats()
+
+    def navigate_review_unusual(self, backward: bool = False):
+        """在审阅界面中，根据“非常规动作”跳转到上/下一个事件。"""
+        events_list = getattr(self, "unusual_events", [])
+        if not events_list:
+            return
+
+        idx = self.review_index_map.get("非常规动作", -1)
+        if idx < 0:
+            idx = 0
+
+        if backward:
+            idx = (idx - 1) % len(events_list)
+        else:
+            idx = (idx + 1) % len(events_list)
+
+        self.review_index_map["非常规动作"] = idx
+
+        target_event = events_list[idx]
+        event_id = target_event.get("event_id")
+
+        if event_id:
+            self._select_event_in_tree(event_id)
+
+        if self.video_worker:
+            frame_num = target_event.get("frame")
+            if frame_num is not None:
+                self.seek_video(frame_num, keep_playing=self.video_worker.is_playing)
+
         self.update_review_stats()
 
     def delete_selected_event(self):
@@ -1635,15 +1814,7 @@ class MainWindow(QMainWindow):
         # 如果当前没有选中的项，使用最后选中的事件ID
         if not event_id and self.last_selected_event_id:
             event_id = self.last_selected_event_id
-            # 尝试在事件树中找到对应的项并选中它
-            iterator = QTreeWidgetItemIterator(self.event_tree)
-            while iterator.value():
-                item = iterator.value()
-                item_event_id = item.data(0, Qt.ItemDataRole.UserRole + 1)
-                if item_event_id == event_id:
-                    self.event_tree.setCurrentItem(item)
-                    break
-                iterator += 1
+            self._select_event_in_tree(event_id)
         
         if not event_id:
             return
@@ -1717,15 +1888,7 @@ class MainWindow(QMainWindow):
         """确保指定的事件在事件树中被选中"""
         if not event_id:
             return
-        iterator = QTreeWidgetItemIterator(self.event_tree)
-        while iterator.value():
-            item = iterator.value()
-            item_event_id = item.data(0, Qt.ItemDataRole.UserRole + 1)
-            if item_event_id == event_id:
-                self.event_tree.setCurrentItem(item)
-                self.last_selected_event_id = event_id  # 更新最后选中的事件ID
-                break
-            iterator += 1
+        self._select_event_in_tree(event_id)
 
     def _get_next_event_id(self, current_event_id):
         """返回事件列表中当前事件的下一条ID，若没有则返回None"""
@@ -1795,7 +1958,7 @@ class MainWindow(QMainWindow):
         
         # 跳转到目标事件的帧号
         if self.video_worker:
-            self.video_worker.seek(target_event['frame'])
+            self.seek_video(target_event['frame'], keep_playing=self.video_worker.is_playing)
         
         print(f"导航到{'下一个' if direction > 0 else '上一个'}事件: {target_event_id} (帧: {target_event['frame']})")
     
@@ -1885,10 +2048,20 @@ class MainWindow(QMainWindow):
             item = iterator.value()
             item_event_id = item.data(0, Qt.ItemDataRole.UserRole + 1)
             if item_event_id == event_id:
+                parent = item.parent()
+                while parent:
+                    parent.setExpanded(True)
+                    parent = parent.parent()
                 self.event_tree.setCurrentItem(item)
                 self.last_selected_event_id = event_id  # 更新最后选中的事件ID
                 # 确保该项可见
-                self.event_tree.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+                self.event_tree.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+                if self.shot_loop_enabled:
+                    self._update_shot_loop_bounds()
+                    if self.video_worker and self.video_worker.is_playing and self.shot_loop_bounds:
+                        start_frame, _ = self.shot_loop_bounds
+                        if self.current_frame_num != start_frame:
+                            self.video_worker.seek(start_frame)
                 break
             iterator += 1
 
@@ -2017,56 +2190,60 @@ class MainWindow(QMainWindow):
             key = event.key()
             # 统一使用 Qt.KeyboardModifier
             modifiers = event.modifiers()
+            normalized_modifiers = modifiers & ~Qt.KeyboardModifier.KeypadModifier
+
+            active_window = QApplication.activeWindow()
+            if active_window and isinstance(active_window, QDialog):
+                return False
+            focus_widget = QApplication.focusWidget()
+            if focus_widget and isinstance(focus_widget, QLineEdit):
+                return False
             
             # --- 播放控制 ---
             if key == Qt.Key.Key_Space:
                 self.toggle_play_pause()
                 return True
             # <<< ================== 核心修正 ================== >>>
-            elif key == Qt.Key.Key_Left and modifiers == Qt.KeyboardModifier.NoModifier:
+            elif key == Qt.Key.Key_Left and normalized_modifiers == Qt.KeyboardModifier.NoModifier:
                 self.seek_video(max(0, self.current_frame_num - 1))
                 return True
-            elif key == Qt.Key.Key_Right and modifiers == Qt.KeyboardModifier.NoModifier:
+            elif key == Qt.Key.Key_Right and normalized_modifiers == Qt.KeyboardModifier.NoModifier:
                 self.seek_video(min(self.slider.maximum(), self.current_frame_num + 1))
                 return True
-            elif key == Qt.Key.Key_Left and modifiers == Qt.KeyboardModifier.ControlModifier:
+            elif key == Qt.Key.Key_Left and normalized_modifiers == Qt.KeyboardModifier.ControlModifier:
                 self.step_frames(forward=False)
                 return True
-            elif key == Qt.Key.Key_Right and modifiers == Qt.KeyboardModifier.ControlModifier:
+            elif key == Qt.Key.Key_Right and normalized_modifiers == Qt.KeyboardModifier.ControlModifier:
                 self.step_frames(forward=True)
                 return True
-            elif key == Qt.Key.Key_Left and modifiers == Qt.KeyboardModifier.ShiftModifier:
+            elif key == Qt.Key.Key_Left and normalized_modifiers == Qt.KeyboardModifier.ShiftModifier:
                 # Shift + Left: 将选中事件的帧号减1
                 self.adjust_selected_event_frame(-1)
                 return True
-            elif key == Qt.Key.Key_Right and modifiers == Qt.KeyboardModifier.ShiftModifier:
+            elif key == Qt.Key.Key_Right and normalized_modifiers == Qt.KeyboardModifier.ShiftModifier:
                 # Shift + Right: 将选中事件的帧号加1
                 self.adjust_selected_event_frame(1)
                 return True
-            elif key == Qt.Key.Key_Up and modifiers == Qt.KeyboardModifier.NoModifier:
+            elif key == Qt.Key.Key_Up and normalized_modifiers == Qt.KeyboardModifier.NoModifier:
                 # Up: 选中上一个事件
                 self.navigate_to_adjacent_event(-1)
                 return True
-            elif key == Qt.Key.Key_Down and modifiers == Qt.KeyboardModifier.NoModifier:
+            elif key == Qt.Key.Key_Down and normalized_modifiers == Qt.KeyboardModifier.NoModifier:
                 # Down: 选中下一个事件
                 self.navigate_to_adjacent_event(1)
                 return True
             elif key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
                 # Enter: 打开选中事件的技术动作编辑对话框
                 # 检查是否有对话框打开，如果有就不拦截Enter键
-                active_window = QApplication.activeWindow()
-                if active_window and isinstance(active_window, QDialog):
-                    # 如果有对话框打开，不拦截Enter键，让对话框自己处理
-                    return False
-                if modifiers == Qt.KeyboardModifier.NoModifier:
+                if normalized_modifiers == Qt.KeyboardModifier.NoModifier:
                     self.edit_selected_event()
                     return True
 
             # --- 事件标注 ---
-            elif key == Qt.Key.Key_S and modifiers == Qt.KeyboardModifier.ShiftModifier:
+            elif key == Qt.Key.Key_S and normalized_modifiers == Qt.KeyboardModifier.ShiftModifier:
                 self.add_set_end_event()
                 return True
-            elif key == Qt.Key.Key_S and modifiers == Qt.KeyboardModifier.NoModifier:
+            elif key == Qt.Key.Key_S and normalized_modifiers == Qt.KeyboardModifier.NoModifier:
                 self.add_set_start_event()
                 return True
             # <<< =============================================== >>>
@@ -2095,10 +2272,10 @@ class MainWindow(QMainWindow):
             elif key == Qt.Key.Key_Delete or key == Qt.Key.Key_Backspace:
                 self.delete_selected_event()
                 return True
-            elif key == Qt.Key.Key_S and modifiers == Qt.KeyboardModifier.ControlModifier:
+            elif key == Qt.Key.Key_S and normalized_modifiers == Qt.KeyboardModifier.ControlModifier:
                 self.save_annotations()
                 return True
-            elif key == Qt.Key.Key_O and modifiers == Qt.KeyboardModifier.ControlModifier:
+            elif key == Qt.Key.Key_O and normalized_modifiers == Qt.KeyboardModifier.ControlModifier:
                 self.load_annotations()
                 return True
         

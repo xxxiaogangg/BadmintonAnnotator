@@ -31,6 +31,10 @@ class MatchSetupDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_button:
+            ok_button.setDefault(True)
+            ok_button.setAutoDefault(True)
         layout.addWidget(buttons)
 
     def get_data(self):
@@ -44,4 +48,3 @@ class MatchSetupDialog(QDialog):
         }
     
     
-
