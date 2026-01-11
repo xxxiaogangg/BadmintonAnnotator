@@ -748,14 +748,26 @@ class DrawingLabel1(QLabel):
     # --- 坐标转换函数 (保持不变) ---
     def set_video_dimensions(self, w, h): self.original_video_width, self.original_video_height = w, h
     def ui_coord_to_video_coord_rect(self, ui_rect):
-        x_scale = self.original_video_width / self.width(); y_scale = self.original_video_height / self.height()
+        if self.width() == 0 or self.height() == 0 or self.original_video_width == 0 or self.original_video_height == 0:
+            return QRect(0, 0, 0, 0)
+        x_scale = self.original_video_width / self.width()
+        y_scale = self.original_video_height / self.height()
         return QRect(int(ui_rect.x() * x_scale), int(ui_rect.y() * y_scale), int(ui_rect.width() * x_scale), int(ui_rect.height() * y_scale))
     def video_coord_to_ui_coord_rect(self, video_rect):
-        x_scale = self.width() / self.original_video_width; y_scale = self.height() / self.original_video_height
+        if self.original_video_width == 0 or self.original_video_height == 0:
+            return QRect(0, 0, 0, 0)
+        x_scale = self.width() / self.original_video_width
+        y_scale = self.height() / self.original_video_height
         return QRect(int(video_rect.x() * x_scale), int(video_rect.y() * y_scale), int(video_rect.width() * x_scale), int(video_rect.height() * y_scale))
     def ui_coord_to_video_coord_point(self, ui_point):
-        x_scale = self.original_video_width / self.width(); y_scale = self.original_video_height / self.height()
+        if self.width() == 0 or self.height() == 0 or self.original_video_width == 0 or self.original_video_height == 0:
+            return QPoint(0, 0)
+        x_scale = self.original_video_width / self.width()
+        y_scale = self.original_video_height / self.height()
         return QPoint(int(ui_point.x() * x_scale), int(ui_point.y() * y_scale))
     def video_coord_to_ui_coord_point(self, video_point):
-        x_scale = self.width() / self.original_video_width; y_scale = self.height() / self.original_video_height
+        if self.original_video_width == 0 or self.original_video_height == 0:
+            return QPoint(0, 0)
+        x_scale = self.width() / self.original_video_width
+        y_scale = self.height() / self.original_video_height
         return QPoint(int(video_point.x() * x_scale), int(video_point.y() * y_scale))
