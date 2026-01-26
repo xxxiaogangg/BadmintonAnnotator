@@ -1,4 +1,4 @@
-# 羽毛球技战术分析与标注工具 v2.0
+# 羽毛球技战术分析与标注工具 v2.2.2
 
 ![App Screenshot](https://raw.githubusercontent.com/username/repo/main/screenshot.png) <!-- 建议替换成你的应用截图 -->
 

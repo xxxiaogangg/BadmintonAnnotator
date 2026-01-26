@@ -5,13 +5,14 @@ import uuid
 import cv2
 import os
 import json
+from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QSlider, QFileDialog, QGroupBox, QTreeWidget,
-                             QListWidget, QMenuBar, QMenu, QListWidgetItem, QDialog, QCheckBox)  # Add QListWidgetItem
+                             QListWidget, QMenuBar, QMenu, QListWidgetItem, QDialog, QCheckBox, QBoxLayout, QGridLayout)  # Add QGridLayout
 from PyQt6.QtGui import QPixmap, QImage, QAction, QKeySequence, QShortcut, QIntValidator
 from PyQt6.QtCore import Qt, QThread, QRect, QPoint, QTimer, QEvent
 from PyQt6.QtWidgets import (QLabel, QSplitter, QComboBox, QMessageBox,
-                             QStackedWidget, QLineEdit, QAbstractItemView)
+                             QStackedWidget, QLineEdit, QAbstractItemView, QSizePolicy) # Add QSizePolicy
 
 from core.video_worker import VideoWorker
 from widgets.drawing_label import DrawingLabel
@@ -24,11 +25,15 @@ from mixins.review_mixin import ReviewMixin
 DEFAULT_VIDEO_FPS = 30
 AUTOSAVE_INTERVAL_MS = 60000
 
+# 配置文件夹路径
+ANNOTATOR_CONFIG_DIR = os.path.join(Path.home(), ".badminton_annotator")
+CONFIG_FILE = os.path.join(ANNOTATOR_CONFIG_DIR, "config.json")
+
 
 class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("羽毛球技战术分析工具 v2.0")
+        self.setWindowTitle("羽毛球技战术分析工具 v2.2.2")
         self.setGeometry(100, 100, 1600, 900)
 
         # --- 核心变量 ---
@@ -69,15 +74,65 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
 
-        main_layout = QHBoxLayout(main_widget)
+        self.main_layout = QGridLayout(main_widget)
         left_panel = self._create_left_panel()
 
         # 创建右侧多页面面板（通过下拉框切换）
         right_panel = self._create_right_panel()
 
         # 将左右两大块添加到主布局
-        main_layout.addWidget(left_panel, 3)      # 左侧视频区，比例为3
-        main_layout.addWidget(right_panel, 1)     # 右侧整个工具区，比例为1
+        # Row 0, Col 0: Video (Span 1 row, 1 col)
+        self.main_layout.addWidget(left_panel, 0, 0)
+        # Row 0, Col 1: Right Panel Tools (Span 1 row, 1 col)
+        self.main_layout.addWidget(right_panel, 0, 1)
+        
+        # Set column stretch
+        self.main_layout.setColumnStretch(0, 3)
+        self.main_layout.setColumnStretch(1, 1)
+
+        # 启动后检查上次打开的视频
+        QTimer.singleShot(100, self._check_last_session)
+
+    def _load_config(self):
+        """加载配置文件"""
+        if not os.path.exists(CONFIG_FILE):
+            return {}
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading config: {e}")
+            return {}
+
+    def _save_config(self, key, value):
+        """保存配置项"""
+        if not os.path.exists(ANNOTATOR_CONFIG_DIR):
+            os.makedirs(ANNOTATOR_CONFIG_DIR, exist_ok=True)
+        
+        config = self._load_config()
+        config[key] = value
+        
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving config: {e}")
+
+    def _check_last_session(self):
+        """检查是否有上次打开的视频记录，并询问是否打开"""
+        config = self._load_config()
+        last_video = config.get("last_video_path")
+        
+        if last_video and os.path.exists(last_video):
+            reply = QMessageBox.question(
+                self, 
+                "恢复上次会话", 
+                f"是否重新打开上次查看的视频？\n\n{os.path.basename(last_video)}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                self.start_session(last_video)
 
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -201,14 +256,14 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
     def _create_right_panel(self):
         """创建右侧多功能面板，通过下拉框切换不同页面"""
         right_widget = QWidget()
-        layout = QVBoxLayout(right_widget)
-        layout.setContentsMargins(5, 5, 5, 5)
+        self.right_panel_layout = QBoxLayout(QBoxLayout.Direction.TopToBottom, right_widget)
+        self.right_panel_layout.setContentsMargins(5, 5, 5, 5)
 
         # 顶部：页面选择下拉框
         switch_layout = QHBoxLayout()
         switch_label = QLabel("右侧页面：")
         self.right_page_combo = QComboBox()
-        self.right_page_combo.addItems(["球与运动员", "标注击球事件", "击球事件审阅", "AI辅助"])
+        self.right_page_combo.addItems(["球与运动员", "标注击球事件", "击球事件审阅", "击球事件审阅（横屏）", "AI辅助"])
         self.right_page_combo.setMaximumWidth(180)
         self.right_page_combo.currentIndexChanged.connect(self.on_right_page_changed)
         self.shot_loop_toggle = QCheckBox("击球循环")
@@ -218,7 +273,7 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         switch_layout.addWidget(self.right_page_combo)
         switch_layout.addWidget(self.shot_loop_toggle)
         switch_layout.addStretch()
-        layout.addLayout(switch_layout)
+        self.right_panel_layout.addLayout(switch_layout)
 
         # 中部：堆叠窗口，放置不同功能页面
         self.right_stacked = QStackedWidget()
@@ -288,18 +343,18 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         page_review_layout.addWidget(self.review_box)
         self.right_stacked.addWidget(page_review)
 
-        layout.addWidget(self.right_stacked)
+        self.right_panel_layout.addWidget(self.right_stacked)
 
         # --- 通用事件浏览器（两个页面共用） ---
-        events_box = QGroupBox("事件浏览器")
-        events_layout = QVBoxLayout(events_box)
+        self.events_box = QGroupBox("事件浏览器")
+        events_layout = QVBoxLayout(self.events_box)
         self.event_tree = QTreeWidget()
         self.event_tree.setHeaderLabels(["事件", "详情"])
         self.event_tree.itemClicked.connect(self.on_event_tree_item_clicked)
         self.event_tree.itemDoubleClicked.connect(self.on_event_tree_item_double_clicked)
         events_layout.addWidget(self.event_tree)
-        events_box.setLayout(events_layout)
-        layout.addWidget(events_box, 1)  # 让事件树占据更多垂直空间
+        self.events_box.setLayout(events_layout)
+        self.right_panel_layout.addWidget(self.events_box, 1)  # 让事件树占据更多垂直空间
 
         # 默认显示第一个页面
         self.right_stacked.setCurrentIndex(0)
@@ -308,19 +363,92 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         return right_widget
 
     def on_right_page_changed(self, index: int):
-        """右侧页面下拉框切换时，切换堆叠窗口页面"""
-        if hasattr(self, "right_stacked") and 0 <= index < self.right_stacked.count():
-            self.right_stacked.setCurrentIndex(index)
+        """右侧页面下拉框切换时，切换堆叠窗口页面，并处理布局变化"""
+        # 下拉框索引映射到 StackedWidget 索引
+        # 0: 球与运动员 -> Stacked 0
+        # 1: 标注击球事件 -> Stacked 1
+        # 2: 击球事件审阅 -> Stacked 2
+        # 3: 击球事件审阅（横屏）-> Stacked 2 (复用审阅页面)
+        # 4: AI辅助 -> (如果 Stacked 有对应页面的话，可能是 3? 但原代码只添加了3个页面)
 
-        # 在“击球事件审阅”页面时，让上方堆叠区域高度尽量贴合审阅框，
-        # 这样事件浏览器就会紧贴在审阅框下方，而不是中间留一大块空白。
+        # 之前的代码添加了3个页面到 right_stacked:
+        # page_objects (0), page_events (1), page_review (2)
+        
+        target_stack_index = index
+        is_horizontal_mode = False
+
+        if index == 3: # 击球事件审阅（横屏）
+            target_stack_index = 2 # 复用审阅页面
+            is_horizontal_mode = True
+        elif index > 3:
+            target_stack_index = index - 1 # AI辅助等后续项往前挪一位
+
+        if hasattr(self, "right_stacked") and 0 <= target_stack_index < self.right_stacked.count():
+            self.right_stacked.setCurrentIndex(target_stack_index)
+        
+        # 切换布局模式
+        self._set_layout_mode(is_horizontal_mode)
+
+        # 在“击球事件审阅”页面（非横屏模式）时，让上方堆叠区域高度尽量贴合
         if hasattr(self, "review_box"):
-            if index == 2:  # 第 3 个页面：击球事件审阅
+            if index == 2:  # 竖屏审阅
                 h = self.review_box.sizeHint().height() + 20
                 self.right_stacked.setMaximumHeight(h)
             else:
-                # 恢复为默认最大高度
                 self.right_stacked.setMaximumHeight(16777215)
+
+    def _set_layout_mode(self, horizontal_review: bool):
+        """
+        切换布局模式
+        horizontal_review: True 表示开启横屏审阅模式 (事件浏览器在底部全宽)
+                           False 表示默认模式 (事件浏览器在右侧面板底部)
+        """
+        if horizontal_review:
+            # 1. 从右侧面板移除 events_box
+            if self.events_box.parent() != self.centralWidget():
+                 self.right_panel_layout.removeWidget(self.events_box)
+                 self.events_box.setParent(None)
+            
+            # 2. 添加到主 Grid 布局的底部 (Row 1, Spanning 2 columns)
+            self.main_layout.addWidget(self.events_box, 1, 0, 1, 2)
+            self.events_box.show()
+            
+            # 2a. 允许视频区域缩小，防止撑大窗口
+            # Video: Ignored (可以尽可能缩小), Right Panel: Preferred
+            if hasattr(self, 'video_label'):
+                 self.video_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+
+            # 3. 调整 Video 和 Tools 的比例 (Row 0)
+            self.main_layout.setColumnStretch(0, 2)  # Video
+            self.main_layout.setColumnStretch(1, 1)  # Tools
+            self.main_layout.setRowStretch(0, 3) # Upper Area (Give more space to video if possible)
+            self.main_layout.setRowStretch(1, 1) # Bottom Area (Events)
+            
+            # 右侧面板保持垂直 (恢复之前的改动)
+            self.right_panel_layout.setDirection(QBoxLayout.Direction.TopToBottom)
+            
+        else:
+            # 恢复 Video Label 默认大小策略
+            # 使用 Ignored + Layout Stretch 是最可靠的缩放方式，避免 Preferred 导致的尺寸固化
+            if hasattr(self, 'video_label'):
+                 self.video_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+
+            # 1. 从主布局移除 events_box
+            self.main_layout.removeWidget(self.events_box)
+            self.events_box.setParent(None)
+            
+            # 2. 放回右侧面板底部
+            self.right_panel_layout.addWidget(self.events_box, 1)
+            self.events_box.show()
+            
+            # 3. 恢复标准比例
+            self.main_layout.setColumnStretch(0, 3) 
+            self.main_layout.setColumnStretch(1, 1)
+            self.main_layout.setRowStretch(0, 10)
+            self.main_layout.setRowStretch(1, 0)
+            
+            # 右侧面板保持垂直
+            self.right_panel_layout.setDirection(QBoxLayout.Direction.TopToBottom)
    
     def _create_top_right_panel(self):
         """创建右上角的面板，用于对象标注"""
@@ -694,6 +822,9 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         self.video_worker.finished.connect(self.video_worker.deleteLater)
         self.video_thread.finished.connect(self.video_thread.deleteLater)
         self.video_thread.start()
+
+        # 成功启动会话后，记录到配置文件
+        self._save_config("last_video_path", video_path)
 
         # <<< ================== 核心新增: 自动加载逻辑 ================== >>>
         # 3. 尝试自动加载同名的标注文件
