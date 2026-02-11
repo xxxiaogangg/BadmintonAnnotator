@@ -114,21 +114,49 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         if not mime.hasUrls():
             event.ignore()
             return
-        local_path = None
+        local_paths = []
         for url in mime.urls():
             if url.isLocalFile():
-                local_path = url.toLocalFile()
-                break
-        if not local_path:
+                local_paths.append(url.toLocalFile())
+        if not local_paths:
             event.ignore()
             return
-        if not os.path.exists(local_path):
-            QMessageBox.warning(self, "打开失败", "拖拽的文件不存在。")
+        video_exts = {".mp4", ".avi"}
+        json_exts = {".json"}
+
+        video_path = None
+        json_path = None
+        for path in local_paths:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in video_exts and video_path is None:
+                video_path = path
+            elif ext in json_exts and json_path is None:
+                json_path = path
+
+        if video_path:
+            if not os.path.exists(video_path):
+                QMessageBox.warning(self, "打开失败", "拖拽的视频文件不存在。")
+                return
+            if os.path.isdir(video_path):
+                QMessageBox.warning(self, "打开失败", "请拖拽视频文件，而不是文件夹。")
+                return
+            self.start_session(video_path)
             return
-        if os.path.isdir(local_path):
-            QMessageBox.warning(self, "打开失败", "请拖拽视频文件，而不是文件夹。")
+
+        if json_path:
+            if not os.path.exists(json_path):
+                QMessageBox.warning(self, "打开失败", "拖拽的标注文件不存在。")
+                return
+            if os.path.isdir(json_path):
+                QMessageBox.warning(self, "打开失败", "请拖拽标注文件，而不是文件夹。")
+                return
+            if not self.video_worker:
+                QMessageBox.information(self, "提示", "请先拖拽或打开视频，再拖入标注文件。")
+                return
+            self.load_annotations(json_path)
             return
-        self.start_session(local_path)
+
+        QMessageBox.information(self, "提示", "仅支持拖拽视频文件或 JSON 标注文件。")
 
     def _load_config(self):
         """加载配置文件"""
