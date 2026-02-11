@@ -35,6 +35,8 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         super().__init__()
         self.setWindowTitle("羽毛球技战术分析工具 v2.2.2")
         self.setGeometry(100, 100, 1600, 900)
+        # 支持拖拽文件进入窗口
+        self.setAcceptDrops(True)
 
         # --- 核心变量 ---
         self.video_worker = None
@@ -92,6 +94,41 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
 
         # 启动后检查上次打开的视频
         QTimer.singleShot(100, self._check_last_session)
+
+    def dragEnterEvent(self, event):
+        """允许拖拽本地文件到主窗口"""
+        mime = event.mimeData()
+        if not mime.hasUrls():
+            event.ignore()
+            return
+        # 只要存在本地文件就允许进入，具体校验放到 dropEvent
+        for url in mime.urls():
+            if url.isLocalFile():
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dropEvent(self, event):
+        """拖拽文件后尝试打开视频"""
+        mime = event.mimeData()
+        if not mime.hasUrls():
+            event.ignore()
+            return
+        local_path = None
+        for url in mime.urls():
+            if url.isLocalFile():
+                local_path = url.toLocalFile()
+                break
+        if not local_path:
+            event.ignore()
+            return
+        if not os.path.exists(local_path):
+            QMessageBox.warning(self, "打开失败", "拖拽的文件不存在。")
+            return
+        if os.path.isdir(local_path):
+            QMessageBox.warning(self, "打开失败", "请拖拽视频文件，而不是文件夹。")
+            return
+        self.start_session(local_path)
 
     def _load_config(self):
         """加载配置文件"""
