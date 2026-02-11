@@ -903,7 +903,6 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
             # 如果主文件不存在，或备份文件比主文件更新，则提示加载备份
             if not os.path.exists(annotation_path) or \
                os.path.getmtime(backup_path) > os.path.getmtime(annotation_path):
-                from PyQt6.QtWidgets import QMessageBox
                 reply = QMessageBox.question(self, "恢复文件", 
                                              "检测到上次有未保存的工作，是否从自动备份中恢复？",
                                              QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
