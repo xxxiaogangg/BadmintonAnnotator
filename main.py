@@ -1033,6 +1033,7 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
                 "score_at_start": list(self.annotations['match_info']['current_set_score']),
                 "hand": "待定",
                 "major": "待定",
+                "technique_hand": "待定",
                 "minor": "待定",
                 "view_desc": "视角正常"
             }
@@ -1074,8 +1075,9 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
             "frame": self.current_frame_num,
             "details": {
                 "winner": winner,
-                "hand": "不适用",
-                "major": "待定",
+                "hand": "适用",
+                "major": "制胜分原因",
+                "technique_hand": "",
                 "minor": "待定",
                 "view_desc": "视角正常"
             }
@@ -1177,6 +1179,7 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
                 "player": "待定", # 球员也设为待定
                 "hand": "待定",
                 "major": "待定",
+                "technique_hand": "待定",
                 "minor": "待定",
                 "view_desc": "视角正常"
             }

@@ -75,6 +75,7 @@ def normalize_annotations(data):
         if event_type in ["SHOT", "RALLY_START"]:
             details.setdefault("hand", "待定")
             details.setdefault("major", "待定")
+            details.setdefault("technique_hand", "待定")
             details.setdefault("minor", "待定")
             details.setdefault("view_desc", "视角正常")
             if event_type == "SHOT":

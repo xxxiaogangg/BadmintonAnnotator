@@ -6,21 +6,58 @@ from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
 from PyQt6.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QEvent, QObject
 
 TECHNIQUES = {
-    "发球": ["正手发网前球", "反手发网前球", "正手发平高球", "反手发平高球", "正手发高远球", "反手发高远球"],
-    "搓放球": ["正手搓球", "反手搓球", "正手放网前球", "反手放网前球"],
-    "推扑球": ["正手推球", "反手推球", "正手扑球", "反手扑球"],
-    "挑球": ["正手挑球", "反手挑球"],
-    "勾球": ["正手勾球", "反手勾球"],
-    "抽球": ["正手抽球", "反手抽球"],
-    "高球": ["正手击高球", "头顶击高球", "反手击高球"],
-    "吊球": ["正手吊球", "反手吊球", "头顶吊球"],
-    "杀球": ["正手杀球", "反手杀球", "头顶杀球"],
-    # "劈球": ["正手劈球", "反手劈球", "头顶劈球"],
-    "封网": ["正手封网", "反手封网", "头顶封网"],
-    "得分方式/失误原因": [
-        "进攻得分", "对手进攻失误", "对手发球失误", "对手非受迫性失误", 
-        "发球直接得分", "防守得分", "多拍相持得分", "其他"
-    ],
+    "发球": ["发网前", "发平高", "发高远"],
+    "后场上手": ["高远", "平高", "吊", "劈吊", "杀"],
+    "网前三技术": ["搓放网", "勾球"],
+    "中前场/防守反应": ["推", "挑", "推挑", "扑", "抽", "挡", "封网"],
+    "制胜分原因": ["受迫性失误", "非受迫性失误", "制胜分"],
+}
+
+TECHNIQUE_HANDS = {
+    "发球": ["正手", "反手"],
+    "后场上手": ["正手", "反手", "头顶"],
+    "网前三技术": ["正手", "反手"],
+    "中前场/防守反应": ["正手", "反手"],
+    "制胜分原因": [],
+}
+
+LEGACY_TECHNIQUE_ALIASES = {
+    "正手发网前球": ("发球", "正手", "发网前"),
+    "反手发网前球": ("发球", "反手", "发网前"),
+    "正手发平高球": ("发球", "正手", "发平高"),
+    "反手发平高球": ("发球", "反手", "发平高"),
+    "正手发高远球": ("发球", "正手", "发高远"),
+    "反手发高远球": ("发球", "反手", "发高远"),
+    "正手击高球": ("后场上手", "正手", "高远"),
+    "反手击高球": ("后场上手", "反手", "高远"),
+    "头顶击高球": ("后场上手", "头顶", "高远"),
+    "头顶手击高球": ("后场上手", "头顶", "高远"),
+    "正手吊球": ("后场上手", "正手", "吊"),
+    "反手吊球": ("后场上手", "反手", "吊"),
+    "头顶吊球": ("后场上手", "头顶", "吊"),
+    "正手杀球": ("后场上手", "正手", "杀"),
+    "反手杀球": ("后场上手", "反手", "杀"),
+    "头顶杀球": ("后场上手", "头顶", "杀"),
+    "正手劈球": ("后场上手", "正手", "劈吊"),
+    "反手劈球": ("后场上手", "反手", "劈吊"),
+    "头顶劈球": ("后场上手", "头顶", "劈吊"),
+    "正手搓球": ("网前三技术", "正手", "搓放网"),
+    "反手搓球": ("网前三技术", "反手", "搓放网"),
+    "正手放网前球": ("网前三技术", "正手", "搓放网"),
+    "反手放网前球": ("网前三技术", "反手", "搓放网"),
+    "正手勾球": ("网前三技术", "正手", "勾球"),
+    "反手勾球": ("网前三技术", "反手", "勾球"),
+    "正手推球": ("中前场/防守反应", "正手", "推"),
+    "反手推球": ("中前场/防守反应", "反手", "推"),
+    "正手挑球": ("中前场/防守反应", "正手", "挑"),
+    "反手挑球": ("中前场/防守反应", "反手", "挑"),
+    "正手扑球": ("中前场/防守反应", "正手", "扑"),
+    "反手扑球": ("中前场/防守反应", "反手", "扑"),
+    "正手抽球": ("中前场/防守反应", "正手", "抽"),
+    "反手抽球": ("中前场/防守反应", "反手", "抽"),
+    "正手封网": ("中前场/防守反应", "正手", "封网"),
+    "反手封网": ("中前场/防守反应", "反手", "封网"),
+    "头顶封网": ("中前场/防守反应", "正手", "封网"),
 }
 
 VIEWDESCP = ["视角正常", "视角异常", "击球缺帧"]
@@ -57,13 +94,14 @@ class TechniqueSelectionDialog(QDialog):
     def __init__(self, current_selection, parent=None):
         super().__init__(parent)
         self.setWindowTitle("选择技术动作")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(650)
 
         layout = QHBoxLayout(self)
 
-        # 1. 创建四个列表（手别/大类/小类/视角）
+        # 1. 创建五个列表（状态/大类/手法方位/小类/视角）
         self.hand_list = QListWidget()
         self.major_list = QListWidget()
+        self.technique_hand_list = QListWidget()
         self.minor_list = QListWidget()
         self.view_list = QListWidget()
         
@@ -72,25 +110,37 @@ class TechniqueSelectionDialog(QDialog):
         self.enter_filter = EnterKeyFilter(self)
         self.hand_list.installEventFilter(self.enter_filter)
         self.major_list.installEventFilter(self.enter_filter)
+        self.technique_hand_list.installEventFilter(self.enter_filter)
         self.minor_list.installEventFilter(self.enter_filter)
         self.view_list.installEventFilter(self.enter_filter)
         
         # 也为对话框本身安装事件过滤器，确保无论焦点在哪里都能捕获Enter键
         self.installEventFilter(self.enter_filter)
         
-        layout.addWidget(self.hand_list)
-        layout.addWidget(self.major_list)
-        layout.addWidget(self.minor_list)
-        layout.addWidget(self.view_list)
+        def add_column(title, list_widget):
+            column = QWidget()
+            column_layout = QVBoxLayout(column)
+            column_layout.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(title)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            column_layout.addWidget(label)
+            column_layout.addWidget(list_widget)
+            layout.addWidget(column)
+
+        add_column("状态", self.hand_list)
+        add_column("大类", self.major_list)
+        add_column("手法/方位", self.technique_hand_list)
+        add_column("动作", self.minor_list)
+        add_column("视角", self.view_list)
         
         # 2. 填充初始数据
         self.hand_list.addItems(HAND_TYPES)
         self.major_list.addItems(TECHNIQUES.keys())
         self.view_list.addItems(VIEWDESCP)
         
-        # 3. 连接信号以实现级联更新（hand变化时切换数据源，major变化时更新minor）
+        # 3. 连接信号以实现级联更新（状态变化时切换数据源，大类变化时更新手法/小类）
         self.hand_list.currentItemChanged.connect(self.on_hand_changed)
-        self.major_list.currentItemChanged.connect(self.update_minor_list)
+        self.major_list.currentItemChanged.connect(self.update_technique_lists)
         
         # 4. 创建OK和Cancel按钮
         button_box_widget = QWidget()
@@ -119,7 +169,7 @@ class TechniqueSelectionDialog(QDialog):
 
         # 当前焦点在哪一列
         focus_widget = self.focusWidget()
-        columns = [self.hand_list, self.major_list, self.minor_list, self.view_list]
+        columns = [self.hand_list, self.major_list, self.technique_hand_list, self.minor_list, self.view_list]
         try:
             col_index = columns.index(focus_widget) if focus_widget in columns else 0
         except ValueError:
@@ -165,12 +215,78 @@ class TechniqueSelectionDialog(QDialog):
         """根据 hand 选择返回对应的数据源"""
         return NOTSUIT if hand_value == "不适用" else TECHNIQUES
 
-    def _update_minor_list_with_data(self, current_item, data_source, selected_minor=None):
-        """使用指定数据源更新小类列表，并可选恢复之前的选中项"""
+    def _split_legacy_technique(self, major, minor):
+        """兼容旧数据中“正手杀”这类合并在小类里的写法。"""
+        if not minor:
+            return None
+
+        alias = LEGACY_TECHNIQUE_ALIASES.get(minor)
+        if alias:
+            return alias
+
+        if major in TECHNIQUES:
+            for technique_hand in TECHNIQUE_HANDS.get(major, []):
+                if minor.startswith(technique_hand):
+                    action = minor[len(technique_hand):]
+                    if action in TECHNIQUES.get(major, []):
+                        return major, technique_hand, action
+
+        for candidate_major, technique_hands in TECHNIQUE_HANDS.items():
+            for technique_hand in technique_hands:
+                if minor.startswith(technique_hand):
+                    action = minor[len(technique_hand):]
+                    if action in TECHNIQUES.get(candidate_major, []):
+                        return candidate_major, technique_hand, action
+        return None
+
+    def _normalize_technique_selection(self, selection, data_source):
+        current_major = selection.get('major')
+        current_minor = selection.get('minor')
+        current_technique_hand = selection.get('technique_hand')
+
+        legacy = self._split_legacy_technique(current_major, current_minor)
+        if legacy:
+            legacy_major, legacy_hand, legacy_minor = legacy
+            if legacy_major in data_source:
+                current_major = legacy_major
+                current_technique_hand = legacy_hand
+                current_minor = legacy_minor
+
+        if current_major not in data_source:
+            current_major = None
+
+        available_hands = TECHNIQUE_HANDS.get(current_major, [])
+        if current_technique_hand not in available_hands:
+            current_technique_hand = available_hands[0] if available_hands else None
+
+        if current_minor not in data_source.get(current_major, []):
+            current_minor = None
+
+        return current_major, current_technique_hand, current_minor
+
+    def _update_technique_lists_with_data(
+        self,
+        current_item,
+        data_source,
+        selected_minor=None,
+        selected_technique_hand=None,
+    ):
+        """使用指定数据源更新手法/方位和小类列表，并可选恢复之前的选中项"""
+        self.technique_hand_list.clear()
         self.minor_list.clear()
         if not current_item:
             return
         major_tech = current_item.text()
+        technique_hands = TECHNIQUE_HANDS.get(major_tech, [])
+        self.technique_hand_list.addItems(technique_hands)
+        if selected_technique_hand:
+            for i in range(self.technique_hand_list.count()):
+                if self.technique_hand_list.item(i).text() == selected_technique_hand:
+                    self.technique_hand_list.setCurrentRow(i)
+                    break
+        elif technique_hands:
+            self.technique_hand_list.setCurrentRow(0)
+
         minor_techs = data_source.get(major_tech, [])
         self.minor_list.addItems(minor_techs)
         if selected_minor:
@@ -178,12 +294,17 @@ class TechniqueSelectionDialog(QDialog):
                 if self.minor_list.item(i).text() == selected_minor:
                     self.minor_list.setCurrentRow(i)
                     break
+        elif minor_techs:
+            self.minor_list.setCurrentRow(0)
 
-    def update_minor_list(self, current_item):
-        """当大类变化时，更新小类列表（随hand切换数据源）"""
+    def update_technique_lists(self, current_item):
+        """当大类变化时，更新手法/方位和小类列表（随状态切换数据源）"""
         hand_value = self.hand_list.currentItem().text() if self.hand_list.currentItem() else HAND_TYPES[0]
         data_source = self._get_data_source(hand_value)
-        self._update_minor_list_with_data(current_item, data_source)
+        self._update_technique_lists_with_data(current_item, data_source)
+
+    def update_minor_list(self, current_item):
+        self.update_technique_lists(current_item)
             
     def set_current_selection(self, selection):
         """根据传入的字典，设置列表的默认选中项"""
@@ -194,23 +315,27 @@ class TechniqueSelectionDialog(QDialog):
         hand_value = selection.get('hand') if selection.get('hand') in HAND_TYPES else HAND_TYPES[0]
         if self.hand_list.count() > 0:
             self.hand_list.setCurrentRow(HAND_TYPES.index(hand_value))
-        # 按hand类型刷新左右列表，并恢复major/minor的选中状态
+        # 按状态刷新列表，并恢复大类/手法/小类的选中状态
         self._refresh_major_and_minor(hand_value, selection)
 
     def _refresh_major_and_minor(self, hand_value, selection=None):
         """根据hand选择刷新大类/小类列表，并在需要时恢复选中项"""
         selection = selection or {}
         data_source = self._get_data_source(hand_value)
-        current_major = selection.get('major')
-        current_minor = selection.get('minor')
+        current_major, current_technique_hand, current_minor = self._normalize_technique_selection(
+            selection,
+            data_source,
+        )
         current_view = selection.get('view_desc', VIEWDESCP[0])
 
         # 暂停信号，避免重复触发
         self.major_list.blockSignals(True)
+        self.technique_hand_list.blockSignals(True)
         self.minor_list.blockSignals(True)
         self.view_list.blockSignals(True)
 
         self.major_list.clear()
+        self.technique_hand_list.clear()
         self.minor_list.clear()
         self.view_list.clear()
 
@@ -224,9 +349,15 @@ class TechniqueSelectionDialog(QDialog):
                 target_major_row = majors.index(current_major)
             self.major_list.setCurrentRow(target_major_row)
             current_item = self.major_list.item(target_major_row)
-            self._update_minor_list_with_data(current_item, data_source, current_minor)
+            self._update_technique_lists_with_data(
+                current_item,
+                data_source,
+                current_minor,
+                current_technique_hand,
+            )
 
         self.major_list.blockSignals(False)
+        self.technique_hand_list.blockSignals(False)
         self.minor_list.blockSignals(False)
         self.view_list.blockSignals(False)
 
@@ -239,6 +370,7 @@ class TechniqueSelectionDialog(QDialog):
         """返回用户最终选择的结果"""
         hand = self.hand_list.currentItem().text() if self.hand_list.currentItem() else None
         major = self.major_list.currentItem().text() if self.major_list.currentItem() else None
+        technique_hand = self.technique_hand_list.currentItem().text() if self.technique_hand_list.currentItem() else None
         minor = self.minor_list.currentItem().text() if self.minor_list.currentItem() else None
         view_desc = self.view_list.currentItem().text() if self.view_list.currentItem() else VIEWDESCP[0]
         data_source = self._get_data_source(hand) if hand else TECHNIQUES
@@ -252,19 +384,35 @@ class TechniqueSelectionDialog(QDialog):
             # major列表只有“不适用”一项，但仍使用当前选中值以保持一致性
             selected_major = major if major in data_source else "不适用"
             if minor:
-                return {"hand": hand, "major": selected_major, "minor": minor, "view_desc": view_desc}
+                return {
+                    "hand": hand,
+                    "major": selected_major,
+                    "technique_hand": "",
+                    "minor": minor,
+                    "view_desc": view_desc,
+                }
             # 如果没有可选项（理论上不会发生），兜底返回hand
             if self.minor_list.count() == 0:
-                return {"hand": hand, "major": selected_major, "minor": selected_major, "view_desc": view_desc}
+                return {
+                    "hand": hand,
+                    "major": selected_major,
+                    "technique_hand": "",
+                    "minor": selected_major,
+                    "view_desc": view_desc,
+                }
             return None
 
         # 适用：必须选择具体的大类和小类
         if hand == "适用":
             if not all([major, minor]):
                 return None  # 如果有未选择项，则返回None
+            technique_hands = TECHNIQUE_HANDS.get(major, [])
+            if technique_hands and technique_hand not in technique_hands:
+                return None
             return {
                 "hand": hand,
                 "major": major,
+                "technique_hand": technique_hand if technique_hands else "",
                 "minor": minor,
                 "view_desc": view_desc
             }
@@ -272,8 +420,21 @@ class TechniqueSelectionDialog(QDialog):
         # 待定：允许选择技术动作，未选则回退为“待定”
         if hand == "待定":
             if major and minor:
-                return {"hand": hand, "major": major, "minor": minor, "view_desc": view_desc}
-            return {"hand": hand, "major": "待定", "minor": "待定", "view_desc": view_desc}
+                technique_hands = TECHNIQUE_HANDS.get(major, [])
+                return {
+                    "hand": hand,
+                    "major": major,
+                    "technique_hand": technique_hand if technique_hand in technique_hands else "",
+                    "minor": minor,
+                    "view_desc": view_desc,
+                }
+            return {
+                "hand": hand,
+                "major": "待定",
+                "technique_hand": "待定",
+                "minor": "待定",
+                "view_desc": view_desc,
+            }
         
         # 兜底：其他情况返回None
         return None

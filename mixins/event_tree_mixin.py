@@ -7,6 +7,41 @@ from widgets.drawing_label import TechniqueSelectionDialog
 
 
 class EventTreeMixin:
+    RALLY_END_REASON_MAJOR = "制胜分原因"
+
+    def _select_dialog_row(self, list_widget, text):
+        for i in range(list_widget.count()):
+            if list_widget.item(i).text() == text:
+                list_widget.setCurrentRow(i)
+                return True
+        return False
+
+    def _prepare_rally_end_reason_dialog(self, dialog):
+        dialog.setWindowTitle("选择制胜分原因")
+        self._select_dialog_row(dialog.hand_list, "适用")
+        self._select_dialog_row(dialog.major_list, self.RALLY_END_REASON_MAJOR)
+
+    def _format_rally_end_text(self, details):
+        winner = details.get("winner", "")
+        reason = details.get("minor")
+        if reason and reason != "待定":
+            return f"得分: {winner} | 原因: {reason}"
+        return f"得分: {winner}"
+
+    def _format_technique_text(self, details):
+        hand = details.get("hand", "待定")
+        if hand != "适用":
+            return str(hand) if hand else "待定"
+
+        minor = details.get("minor", "待定")
+        if not minor or minor == "待定":
+            return "待定"
+
+        technique_hand = details.get("technique_hand", "")
+        if technique_hand and technique_hand != "待定":
+            return f"{technique_hand}{minor}"
+        return minor
+
     def _reset_event_tree_view(self):
         """清空事件树并重置缓存，适用于无标注时的快速刷新"""
         if hasattr(self, "event_tree"):
@@ -86,11 +121,7 @@ class EventTreeMixin:
                 score_str = f"{score_at_start[0]}-{score_at_start[1]}"
                 item.setText(0, f"{item.text(0)} (比分 {score_str})")
                 serving_player = details.get('serving_player', '待定')
-                hand = details.get('hand', '待定')
-                if hand == "适用":
-                    technique_display = details.get('minor', '待定')
-                else:
-                    technique_display = str(hand) if hand else '待定'
+                technique_display = self._format_technique_text(details)
                 view_desc = details.get('view_desc', '视角正常')
                 item.setText(1, f"{serving_player}: {technique_display}-{view_desc}")
 
@@ -104,16 +135,12 @@ class EventTreeMixin:
                 details = event.get('details', {})
                 if event_type == 'SHOT':
                     item.setText(0, f"🎾 击球 (帧: {event.get('frame')})")
-                    hand = details.get('hand', '待定')
-                    if hand == "适用":
-                        technique_display = details.get('minor', '待定')
-                    else:
-                        technique_display = str(hand) if hand else '待定'
+                    technique_display = self._format_technique_text(details)
                     view_desc = details.get('view_desc', '视角正常')
                     item.setText(1, f"{details.get('player', '待定')}: {technique_display}-{view_desc}")
                 else:
                     item.setText(0, f"🏁 回合结束 (帧: {event.get('frame')})")
-                    item.setText(1, f"得分: {details.get('winner', '')}")
+                    item.setText(1, self._format_rally_end_text(details))
 
             elif event_type == 'SET_END':
                 if current_set_item:
@@ -235,12 +262,7 @@ class EventTreeMixin:
                         dialog.major_list.setCurrentRow(i)
                         break
             elif event_type == 'RALLY_END':
-                dialog.setWindowTitle("选择得分方式或失误原因")
-                # 预选 "得分方式/失误原因"
-                for i in range(dialog.major_list.count()):
-                    if dialog.major_list.item(i).text() == "得分方式/失误原因":
-                        dialog.major_list.setCurrentRow(i)
-                        break
+                self._prepare_rally_end_reason_dialog(dialog)
 
             # 关闭时无论结果如何都清理标志
             result = dialog.exec()
@@ -590,12 +612,7 @@ class EventTreeMixin:
                     dialog.major_list.setCurrentRow(i)
                     break
         elif event_type == 'RALLY_END':
-            dialog.setWindowTitle("选择得分方式或失误原因")
-            # 预选 "得分方式/失误原因"
-            for i in range(dialog.major_list.count()):
-                if dialog.major_list.item(i).text() == "得分方式/失误原因":
-                    dialog.major_list.setCurrentRow(i)
-                    break
+            self._prepare_rally_end_reason_dialog(dialog)
 
         result = dialog.exec()
         self._tech_dialog_open = False
@@ -667,11 +684,7 @@ class EventTreeMixin:
 
         if event_type == "SHOT":
             item.setText(0, f"🎾 击球 (帧: {event.get('frame')})")
-            hand = details.get("hand", "待定")
-            if hand == "适用":
-                technique_display = details.get("minor", "待定")
-            else:
-                technique_display = str(hand) if hand else "待定"
+            technique_display = self._format_technique_text(details)
             view_desc = details.get("view_desc", "视角正常")
             item.setText(1, f"{details.get('player', '待定')}: {technique_display}-{view_desc}")
             return True
@@ -683,11 +696,7 @@ class EventTreeMixin:
             prefix = current_title.split("(比分")[0].strip() if "(比分" in current_title else "🏸 回合"
             item.setText(0, f"{prefix} (比分 {score_str})")
             serving_player = details.get("serving_player", "待定")
-            hand = details.get("hand", "待定")
-            if hand == "适用":
-                technique_display = details.get("minor", "待定")
-            else:
-                technique_display = str(hand) if hand else "待定"
+            technique_display = self._format_technique_text(details)
             view_desc = details.get("view_desc", "视角正常")
             item.setText(1, f"{serving_player}: {technique_display}-{view_desc}")
             item.setExpanded(was_expanded)
@@ -695,7 +704,7 @@ class EventTreeMixin:
 
         if event_type == "RALLY_END":
             item.setText(0, f"🏁 回合结束 (帧: {event.get('frame')})")
-            item.setText(1, f"得分: {details.get('winner', '')}")
+            item.setText(1, self._format_rally_end_text(details))
             item.setExpanded(was_expanded)
             return True
 
@@ -786,11 +795,7 @@ class EventTreeMixin:
                 score_str = f"{score_at_start[0]}-{score_at_start[1]}"
                 item.setText(0, f"{item.text(0)} (比分 {score_str})")
                 serving_player = details.get("serving_player", "待定")
-                hand = details.get("hand", "待定")
-                if hand == "适用":
-                    technique_display = details.get("minor", "待定")
-                else:
-                    technique_display = str(hand) if hand else "待定"
+                technique_display = self._format_technique_text(details)
                 view_desc = details.get("view_desc", "视角正常")
                 item.setText(1, f"{serving_player}: {technique_display}-{view_desc}")
 
@@ -800,16 +805,12 @@ class EventTreeMixin:
                 details = event.get("details", {})
                 if event_type == "SHOT":
                     item.setText(0, f"🎾 击球 (帧: {event.get('frame')})")
-                    hand = details.get("hand", "待定")
-                    if hand == "适用":
-                        technique_display = details.get("minor", "待定")
-                    else:
-                        technique_display = str(hand) if hand else "待定"
+                    technique_display = self._format_technique_text(details)
                     view_desc = details.get("view_desc", "视角正常")
                     item.setText(1, f"{details.get('player', '待定')}: {technique_display}-{view_desc}")
                 else:
                     item.setText(0, f"🏁 回合结束 (帧: {event.get('frame')})")
-                    item.setText(1, f"得分: {details.get('winner', '')}")
+                    item.setText(1, self._format_rally_end_text(details))
 
             elif event_type == "SET_END":
                 item = QTreeWidgetItem(set_item)
