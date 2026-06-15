@@ -1032,9 +1032,11 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
                 "serving_player": serving_player,
                 "score_at_start": list(self.annotations['match_info']['current_set_score']),
                 "hand": "待定",
-                "major": "待定",
+                "major": "发球",
                 "technique_hand": "待定",
                 "minor": "待定",
+                "serve_landing": "待定",
+                "court_position": "待定",
                 "view_desc": "视角正常"
             }
         }
@@ -1181,6 +1183,8 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
                 "major": "待定",
                 "technique_hand": "待定",
                 "minor": "待定",
+                "shot_route": "待定",
+                "court_position": "待定",
                 "view_desc": "视角正常"
             }
         }

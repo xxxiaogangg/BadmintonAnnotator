@@ -80,9 +80,18 @@ def normalize_annotations(data):
             details.setdefault("view_desc", "视角正常")
             if event_type == "SHOT":
                 details.setdefault("player", "待定")
+                details.setdefault("shot_route", "待定")
+                details.setdefault("court_position", "待定")
             if event_type == "RALLY_START":
                 details.setdefault("serving_player", "待定")
                 details.setdefault("score_at_start", [0, 0])
+                details.setdefault("serve_landing", "待定")
+                details.setdefault("court_position", "待定")
+        elif event_type == "RALLY_END":
+            details.setdefault("hand", "适用")
+            details.setdefault("major", "制胜分原因")
+            details.setdefault("technique_hand", "")
+            details.setdefault("minor", "待定")
         event["details"] = details
 
     return data

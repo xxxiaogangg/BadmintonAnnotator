@@ -68,6 +68,17 @@ NOTSUIT = {
 
 # 正反手是一个独立的维度
 HAND_TYPES = ["适用", "不适用", "待定"]
+SHOT_TECHNIQUES = {
+    key: TECHNIQUES[key]
+    for key in ["后场上手", "网前三技术", "中前场/防守反应"]
+}
+SERVE_LANDING_AREAS = ["1", "2", "3", "4", "5", "6"]
+SHOT_ROUTES = ["直线", "斜线", "中路"]
+COURT_POSITIONS = [
+    "前左", "前中", "前右",
+    "中左", "中中", "中右",
+    "后左", "后中", "后右",
+]
 
 
 class EnterKeyFilter(QObject):
@@ -438,6 +449,349 @@ class TechniqueSelectionDialog(QDialog):
         
         # 兜底：其他情况返回None
         return None
+
+
+class DetailSelectionDialogBase(QDialog):
+    """事件详情选择弹窗基类，提供统一列布局和键盘导航。"""
+    def __init__(self, title, min_width, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(min_width)
+        self.layout = QHBoxLayout(self)
+        self.columns = []
+        self.enter_filter = EnterKeyFilter(self)
+        self.installEventFilter(self.enter_filter)
+
+    def add_list_column(self, title):
+        list_widget = QListWidget()
+        list_widget.installEventFilter(self.enter_filter)
+
+        column = QWidget()
+        column_layout = QVBoxLayout(column)
+        column_layout.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(title)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        column_layout.addWidget(label)
+        column_layout.addWidget(list_widget)
+        self.layout.addWidget(column)
+
+        self.columns.append(list_widget)
+        return list_widget
+
+    def add_buttons(self):
+        button_box_widget = QWidget()
+        button_layout = QVBoxLayout(button_box_widget)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_button:
+            ok_button.setDefault(True)
+            ok_button.setAutoDefault(True)
+        button_layout.addStretch()
+        button_layout.addWidget(buttons)
+        self.layout.addWidget(button_box_widget)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        focus_widget = self.focusWidget()
+        try:
+            col_index = self.columns.index(focus_widget) if focus_widget in self.columns else 0
+        except ValueError:
+            col_index = 0
+
+        if key == Qt.Key.Key_Right:
+            if col_index < len(self.columns) - 1:
+                self.columns[col_index + 1].setFocus()
+            return
+        if key == Qt.Key.Key_Left:
+            if col_index > 0:
+                self.columns[col_index - 1].setFocus()
+            return
+        if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            list_widget = self.columns[col_index]
+            row = list_widget.currentRow()
+            if row < 0 and list_widget.count() > 0:
+                list_widget.setCurrentRow(0)
+            elif key == Qt.Key.Key_Up and row > 0:
+                list_widget.setCurrentRow(row - 1)
+            elif key == Qt.Key.Key_Down and row < list_widget.count() - 1:
+                list_widget.setCurrentRow(row + 1)
+            return
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.accept()
+            return
+        super().keyPressEvent(event)
+
+    def set_status(self, status):
+        if hasattr(self, "hand_list"):
+            self._select_list_text(self.hand_list, status)
+
+    def _select_list_text(self, list_widget, text, default_row=0):
+        if text:
+            for i in range(list_widget.count()):
+                if list_widget.item(i).text() == text:
+                    list_widget.setCurrentRow(i)
+                    return True
+        if list_widget.count() > 0 and default_row is not None:
+            list_widget.setCurrentRow(default_row)
+        return False
+
+    def _current_text(self, list_widget):
+        item = list_widget.currentItem()
+        return item.text() if item else None
+
+    def _split_legacy_technique(self, major, minor):
+        if not minor:
+            return None
+        alias = LEGACY_TECHNIQUE_ALIASES.get(minor)
+        if alias:
+            return alias
+        if major in TECHNIQUES:
+            for technique_hand in TECHNIQUE_HANDS.get(major, []):
+                if minor.startswith(technique_hand):
+                    action = minor[len(technique_hand):]
+                    if action in TECHNIQUES.get(major, []):
+                        return major, technique_hand, action
+        for candidate_major, technique_hands in TECHNIQUE_HANDS.items():
+            for technique_hand in technique_hands:
+                if minor.startswith(technique_hand):
+                    action = minor[len(technique_hand):]
+                    if action in TECHNIQUES.get(candidate_major, []):
+                        return candidate_major, technique_hand, action
+        return None
+
+    def _restore_simple_list(self, list_widget, value):
+        self._select_list_text(list_widget, value)
+
+
+class ServeTechniqueSelectionDialog(DetailSelectionDialogBase):
+    def __init__(self, current_selection, parent=None):
+        super().__init__("编辑发球技术", 720, parent)
+        self.current_selection = current_selection or {}
+        self.hand_list = self.add_list_column("状态")
+        self.technique_hand_list = self.add_list_column("手法")
+        self.minor_list = self.add_list_column("动作")
+        self.serve_landing_list = self.add_list_column("发球落点")
+        self.court_position_list = self.add_list_column("位置")
+        self.view_list = self.add_list_column("视角")
+
+        self.hand_list.addItems(HAND_TYPES)
+        self.serve_landing_list.addItems(SERVE_LANDING_AREAS)
+        self.court_position_list.addItems(COURT_POSITIONS)
+        self.view_list.addItems(VIEWDESCP)
+        self.hand_list.currentItemChanged.connect(self.on_status_changed)
+
+        self.add_buttons()
+        self.set_current_selection(self.current_selection)
+        self.hand_list.setFocus()
+
+    def on_status_changed(self, current_item):
+        status = current_item.text() if current_item else HAND_TYPES[0]
+        self.technique_hand_list.clear()
+        self.minor_list.clear()
+        if status == "不适用":
+            self.minor_list.addItems(NOTSUIT["不适用"])
+            self._select_list_text(self.minor_list, self.current_selection.get("minor"))
+            return
+        self.technique_hand_list.addItems(TECHNIQUE_HANDS["发球"])
+        self.minor_list.addItems(TECHNIQUES["发球"])
+        major, technique_hand, minor = self._normalize_serve_selection(self.current_selection)
+        self._select_list_text(self.technique_hand_list, technique_hand)
+        self._select_list_text(self.minor_list, minor)
+
+    def _normalize_serve_selection(self, selection):
+        major = selection.get("major", "发球")
+        minor = selection.get("minor")
+        technique_hand = selection.get("technique_hand")
+        legacy = self._split_legacy_technique(major, minor)
+        if legacy:
+            legacy_major, legacy_hand, legacy_minor = legacy
+            if legacy_major == "发球":
+                technique_hand = legacy_hand
+                minor = legacy_minor
+        if technique_hand not in TECHNIQUE_HANDS["发球"]:
+            technique_hand = TECHNIQUE_HANDS["发球"][0]
+        if minor not in TECHNIQUES["发球"]:
+            minor = TECHNIQUES["发球"][0]
+        return "发球", technique_hand, minor
+
+    def set_current_selection(self, selection):
+        status = selection.get("hand") if selection.get("hand") in HAND_TYPES else HAND_TYPES[0]
+        self._select_list_text(self.hand_list, status)
+        self.on_status_changed(self.hand_list.currentItem())
+        self._restore_simple_list(self.serve_landing_list, selection.get("serve_landing"))
+        self._restore_simple_list(self.court_position_list, selection.get("court_position"))
+        self._restore_simple_list(self.view_list, selection.get("view_desc", VIEWDESCP[0]))
+
+    def get_selection(self):
+        status = self._current_text(self.hand_list)
+        view_desc = self._current_text(self.view_list) or VIEWDESCP[0]
+        if status == "不适用":
+            minor = self._current_text(self.minor_list)
+            if not minor:
+                return None
+            return {
+                "hand": status,
+                "major": "不适用",
+                "technique_hand": "",
+                "minor": minor,
+                "serve_landing": "",
+                "court_position": "",
+                "view_desc": view_desc,
+            }
+
+        technique_hand = self._current_text(self.technique_hand_list)
+        minor = self._current_text(self.minor_list)
+        if not all([status, technique_hand, minor]):
+            return None
+        return {
+            "hand": status,
+            "major": "发球",
+            "technique_hand": technique_hand,
+            "minor": minor,
+            "serve_landing": self._current_text(self.serve_landing_list) or "",
+            "court_position": self._current_text(self.court_position_list) or "",
+            "view_desc": view_desc,
+        }
+
+
+class ShotTechniqueSelectionDialog(DetailSelectionDialogBase):
+    def __init__(self, current_selection, parent=None):
+        super().__init__("编辑击球技术", 860, parent)
+        self.current_selection = current_selection or {}
+        self.hand_list = self.add_list_column("状态")
+        self.major_list = self.add_list_column("大类")
+        self.technique_hand_list = self.add_list_column("手法/方位")
+        self.minor_list = self.add_list_column("动作")
+        self.shot_route_list = self.add_list_column("线路")
+        self.court_position_list = self.add_list_column("位置")
+        self.view_list = self.add_list_column("视角")
+
+        self.hand_list.addItems(HAND_TYPES)
+        self.shot_route_list.addItems(SHOT_ROUTES)
+        self.court_position_list.addItems(COURT_POSITIONS)
+        self.view_list.addItems(VIEWDESCP)
+        self.hand_list.currentItemChanged.connect(self.on_status_changed)
+        self.major_list.currentItemChanged.connect(self.on_major_changed)
+
+        self.add_buttons()
+        self.set_current_selection(self.current_selection)
+        self.hand_list.setFocus()
+
+    def _get_data_source(self, status):
+        return NOTSUIT if status == "不适用" else SHOT_TECHNIQUES
+
+    def on_status_changed(self, current_item):
+        status = current_item.text() if current_item else HAND_TYPES[0]
+        data_source = self._get_data_source(status)
+        self.major_list.blockSignals(True)
+        self.major_list.clear()
+        self.major_list.addItems(data_source.keys())
+        self.major_list.blockSignals(False)
+        major, technique_hand, minor = self._normalize_shot_selection(self.current_selection, data_source)
+        self._select_list_text(self.major_list, major)
+        self._refresh_technique_lists(data_source, technique_hand, minor)
+
+    def on_major_changed(self, current_item):
+        status = self._current_text(self.hand_list) or HAND_TYPES[0]
+        data_source = self._get_data_source(status)
+        self._refresh_technique_lists(data_source)
+
+    def _normalize_shot_selection(self, selection, data_source):
+        major = selection.get("major")
+        minor = selection.get("minor")
+        technique_hand = selection.get("technique_hand")
+        legacy = self._split_legacy_technique(major, minor)
+        if legacy:
+            legacy_major, legacy_hand, legacy_minor = legacy
+            if legacy_major in data_source:
+                major = legacy_major
+                technique_hand = legacy_hand
+                minor = legacy_minor
+        if major not in data_source:
+            major = next(iter(data_source), None)
+        available_hands = TECHNIQUE_HANDS.get(major, [])
+        if technique_hand not in available_hands:
+            technique_hand = available_hands[0] if available_hands else None
+        if minor not in data_source.get(major, []):
+            minor = data_source.get(major, [None])[0]
+        return major, technique_hand, minor
+
+    def _refresh_technique_lists(self, data_source, selected_technique_hand=None, selected_minor=None):
+        major = self._current_text(self.major_list)
+        self.technique_hand_list.clear()
+        self.minor_list.clear()
+        if not major:
+            return
+        technique_hands = TECHNIQUE_HANDS.get(major, [])
+        self.technique_hand_list.addItems(technique_hands)
+        self.minor_list.addItems(data_source.get(major, []))
+        self._select_list_text(self.technique_hand_list, selected_technique_hand)
+        self._select_list_text(self.minor_list, selected_minor)
+
+    def set_current_selection(self, selection):
+        status = selection.get("hand") if selection.get("hand") in HAND_TYPES else HAND_TYPES[0]
+        self._select_list_text(self.hand_list, status)
+        self.on_status_changed(self.hand_list.currentItem())
+        self._restore_simple_list(self.shot_route_list, selection.get("shot_route"))
+        self._restore_simple_list(self.court_position_list, selection.get("court_position"))
+        self._restore_simple_list(self.view_list, selection.get("view_desc", VIEWDESCP[0]))
+
+    def get_selection(self):
+        status = self._current_text(self.hand_list)
+        major = self._current_text(self.major_list)
+        minor = self._current_text(self.minor_list)
+        view_desc = self._current_text(self.view_list) or VIEWDESCP[0]
+
+        if status == "不适用":
+            if not minor:
+                return None
+            return {
+                "hand": status,
+                "major": major if major in NOTSUIT else "不适用",
+                "technique_hand": "",
+                "minor": minor,
+                "shot_route": "",
+                "court_position": "",
+                "view_desc": view_desc,
+            }
+
+        technique_hand = self._current_text(self.technique_hand_list)
+        technique_hands = TECHNIQUE_HANDS.get(major, [])
+        if not all([status, major, minor]) or (technique_hands and technique_hand not in technique_hands):
+            return None
+        return {
+            "hand": status,
+            "major": major,
+            "technique_hand": technique_hand if technique_hands else "",
+            "minor": minor,
+            "shot_route": self._current_text(self.shot_route_list) or "",
+            "court_position": self._current_text(self.court_position_list) or "",
+            "view_desc": view_desc,
+        }
+
+
+class RallyEndReasonDialog(DetailSelectionDialogBase):
+    def __init__(self, current_selection, parent=None):
+        super().__init__("选择制胜分原因", 260, parent)
+        self.reason_list = self.add_list_column("制胜分原因")
+        self.reason_list.addItems(TECHNIQUES["制胜分原因"])
+        self.add_buttons()
+        self._select_list_text(self.reason_list, (current_selection or {}).get("minor"))
+        self.reason_list.setFocus()
+
+    def get_selection(self):
+        reason = self._current_text(self.reason_list)
+        if not reason:
+            return None
+        return {
+            "hand": "适用",
+            "major": "制胜分原因",
+            "technique_hand": "",
+            "minor": reason,
+        }
+
 
 class DrawingLabel(QLabel):
     # --- 信号定义 (保持不变) ---

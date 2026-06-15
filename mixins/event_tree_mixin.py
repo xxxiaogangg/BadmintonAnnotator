@@ -3,23 +3,22 @@
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QAbstractItemView, QTreeWidgetItem, QTreeWidgetItemIterator, QMessageBox
 
-from widgets.drawing_label import TechniqueSelectionDialog
+from widgets.drawing_label import (
+    RallyEndReasonDialog,
+    ServeTechniqueSelectionDialog,
+    ShotTechniqueSelectionDialog,
+)
 
 
 class EventTreeMixin:
-    RALLY_END_REASON_MAJOR = "制胜分原因"
-
-    def _select_dialog_row(self, list_widget, text):
-        for i in range(list_widget.count()):
-            if list_widget.item(i).text() == text:
-                list_widget.setCurrentRow(i)
-                return True
-        return False
-
-    def _prepare_rally_end_reason_dialog(self, dialog):
-        dialog.setWindowTitle("选择制胜分原因")
-        self._select_dialog_row(dialog.hand_list, "适用")
-        self._select_dialog_row(dialog.major_list, self.RALLY_END_REASON_MAJOR)
+    def _create_event_detail_dialog(self, event_type, details):
+        if event_type == "RALLY_START":
+            return ServeTechniqueSelectionDialog(details, self)
+        if event_type == "SHOT":
+            return ShotTechniqueSelectionDialog(details, self)
+        if event_type == "RALLY_END":
+            return RallyEndReasonDialog(details, self)
+        return None
 
     def _format_rally_end_text(self, details):
         winner = details.get("winner", "")
@@ -39,8 +38,24 @@ class EventTreeMixin:
 
         technique_hand = details.get("technique_hand", "")
         if technique_hand and technique_hand != "待定":
-            return f"{technique_hand}{minor}"
-        return minor
+            technique_text = f"{technique_hand}{minor}"
+        else:
+            technique_text = minor
+
+        extra_parts = []
+        serve_landing = details.get("serve_landing")
+        if serve_landing and serve_landing != "待定":
+            extra_parts.append(f"落点:{serve_landing}")
+        shot_route = details.get("shot_route")
+        if shot_route and shot_route != "待定":
+            extra_parts.append(f"线路:{shot_route}")
+        court_position = details.get("court_position")
+        if court_position and court_position != "待定":
+            extra_parts.append(f"位置:{court_position}")
+
+        if extra_parts:
+            return " | ".join([technique_text] + extra_parts)
+        return technique_text
 
     def _reset_event_tree_view(self):
         """清空事件树并重置缓存，适用于无标注时的快速刷新"""
@@ -244,25 +259,19 @@ class EventTreeMixin:
             if self._tech_dialog_open:
                 return
             self._tech_dialog_open = True
-            dialog = TechniqueSelectionDialog(clicked_event['details'], self)
+            dialog = self._create_event_detail_dialog(event_type, clicked_event['details'])
+            if not dialog:
+                self._tech_dialog_open = False
+                return
 
             # 在"标注击球事件"页面下，默认第一列选择"适用"
-            if hasattr(self, 'right_page_combo') and self.right_page_combo.currentIndex() == 1:
-                # 索引1对应"标注击球事件"页面
-                for i in range(dialog.hand_list.count()):
-                    if dialog.hand_list.item(i).text() == "适用":
-                        dialog.hand_list.setCurrentRow(i)
-                        break
-
-            if event_type == 'RALLY_START':
-                dialog.setWindowTitle("编辑发球技术")
-                # 预选 "发球"
-                for i in range(dialog.major_list.count()):
-                    if dialog.major_list.item(i).text() == "发球":
-                        dialog.major_list.setCurrentRow(i)
-                        break
-            elif event_type == 'RALLY_END':
-                self._prepare_rally_end_reason_dialog(dialog)
+            if (
+                event_type in ["RALLY_START", "SHOT"]
+                and hasattr(self, 'right_page_combo')
+                and self.right_page_combo.currentIndex() == 1
+                and hasattr(dialog, "set_status")
+            ):
+                dialog.set_status("适用")
 
             # 关闭时无论结果如何都清理标志
             result = dialog.exec()
@@ -594,25 +603,19 @@ class EventTreeMixin:
         if self._tech_dialog_open:
             return
         self._tech_dialog_open = True
-        dialog = TechniqueSelectionDialog(clicked_event['details'], self)
+        dialog = self._create_event_detail_dialog(event_type, clicked_event['details'])
+        if not dialog:
+            self._tech_dialog_open = False
+            return
 
         # 在"标注击球事件"页面下，默认第一列选择"适用"
-        if hasattr(self, 'right_page_combo') and self.right_page_combo.currentIndex() == 1:
-            # 索引1对应"标注击球事件"页面
-            for i in range(dialog.hand_list.count()):
-                if dialog.hand_list.item(i).text() == "适用":
-                    dialog.hand_list.setCurrentRow(i)
-                    break
-
-        if event_type == 'RALLY_START':
-            dialog.setWindowTitle("编辑发球技术")
-            # 预选 "发球"
-            for i in range(dialog.major_list.count()):
-                if dialog.major_list.item(i).text() == "发球":
-                    dialog.major_list.setCurrentRow(i)
-                    break
-        elif event_type == 'RALLY_END':
-            self._prepare_rally_end_reason_dialog(dialog)
+        if (
+            event_type in ["RALLY_START", "SHOT"]
+            and hasattr(self, 'right_page_combo')
+            and self.right_page_combo.currentIndex() == 1
+            and hasattr(dialog, "set_status")
+        ):
+            dialog.set_status("适用")
 
         result = dialog.exec()
         self._tech_dialog_open = False
