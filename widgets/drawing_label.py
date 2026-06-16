@@ -5,21 +5,53 @@ from PyQt6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QListWidget,
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
 from PyQt6.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QEvent, QObject
 
+from core.data_model import COURT_POINT_LABELS, COURT_POINT_ORDER
+
 TECHNIQUES = {
     "发球": ["发网前", "发平高", "发高远"],
-    "后场上手": ["高远", "平高", "吊", "劈吊", "杀"],
-    "网前三技术": ["搓放网", "勾球"],
-    "中前场/防守反应": ["推", "挑", "推挑", "扑", "抽", "挡", "封网"],
-    "制胜分原因": ["受迫性失误", "非受迫性失误", "制胜分"],
+    "网前技术": ["搓放网", "勾球", "推", "挑", "推挑", "扑", "封网"],
+    "中场技术": ["抽", "挡"],
+    "后场技术": ["高远", "平高", "吊", "劈吊", "杀"],
+    "制胜分原因": ["对方受迫性失误", "对方非受迫性失误", "制胜分"],
 }
 
 TECHNIQUE_HANDS = {
     "发球": ["正手", "反手"],
-    "后场上手": ["正手", "反手", "头顶"],
-    "网前三技术": ["正手", "反手"],
-    "中前场/防守反应": ["正手", "反手"],
+    "网前技术": ["正手", "反手"],
+    "中场技术": ["正手", "反手"],
+    "后场技术": ["正手", "反手", "头顶"],
     "制胜分原因": [],
 }
+
+LEGACY_MAJOR_ALIASES = {
+    "后场上手": "后场技术",
+    "网前三技术": "网前技术",
+}
+LEGACY_MID_FRONT_MAJOR = "中前场/防守反应"
+LEGACY_FRONT_ACTIONS = {"推", "挑", "推挑", "扑", "封网"}
+LEGACY_MID_ACTIONS = {"抽", "挡"}
+LEGACY_RALLY_END_REASON_ALIASES = {
+    "受迫性失误": "对方受迫性失误",
+    "非受迫性失误": "对方非受迫性失误",
+}
+
+
+def normalize_technique_major(major, minor=None):
+    if major in TECHNIQUES:
+        return major
+    if major in LEGACY_MAJOR_ALIASES:
+        return LEGACY_MAJOR_ALIASES[major]
+    if major == LEGACY_MID_FRONT_MAJOR:
+        if minor in LEGACY_FRONT_ACTIONS:
+            return "网前技术"
+        if minor in LEGACY_MID_ACTIONS:
+            return "中场技术"
+    return major
+
+
+def normalize_rally_end_reason(reason):
+    return LEGACY_RALLY_END_REASON_ALIASES.get(reason, reason)
+
 
 LEGACY_TECHNIQUE_ALIASES = {
     "正手发网前球": ("发球", "正手", "发网前"),
@@ -28,36 +60,36 @@ LEGACY_TECHNIQUE_ALIASES = {
     "反手发平高球": ("发球", "反手", "发平高"),
     "正手发高远球": ("发球", "正手", "发高远"),
     "反手发高远球": ("发球", "反手", "发高远"),
-    "正手击高球": ("后场上手", "正手", "高远"),
-    "反手击高球": ("后场上手", "反手", "高远"),
-    "头顶击高球": ("后场上手", "头顶", "高远"),
-    "头顶手击高球": ("后场上手", "头顶", "高远"),
-    "正手吊球": ("后场上手", "正手", "吊"),
-    "反手吊球": ("后场上手", "反手", "吊"),
-    "头顶吊球": ("后场上手", "头顶", "吊"),
-    "正手杀球": ("后场上手", "正手", "杀"),
-    "反手杀球": ("后场上手", "反手", "杀"),
-    "头顶杀球": ("后场上手", "头顶", "杀"),
-    "正手劈球": ("后场上手", "正手", "劈吊"),
-    "反手劈球": ("后场上手", "反手", "劈吊"),
-    "头顶劈球": ("后场上手", "头顶", "劈吊"),
-    "正手搓球": ("网前三技术", "正手", "搓放网"),
-    "反手搓球": ("网前三技术", "反手", "搓放网"),
-    "正手放网前球": ("网前三技术", "正手", "搓放网"),
-    "反手放网前球": ("网前三技术", "反手", "搓放网"),
-    "正手勾球": ("网前三技术", "正手", "勾球"),
-    "反手勾球": ("网前三技术", "反手", "勾球"),
-    "正手推球": ("中前场/防守反应", "正手", "推"),
-    "反手推球": ("中前场/防守反应", "反手", "推"),
-    "正手挑球": ("中前场/防守反应", "正手", "挑"),
-    "反手挑球": ("中前场/防守反应", "反手", "挑"),
-    "正手扑球": ("中前场/防守反应", "正手", "扑"),
-    "反手扑球": ("中前场/防守反应", "反手", "扑"),
-    "正手抽球": ("中前场/防守反应", "正手", "抽"),
-    "反手抽球": ("中前场/防守反应", "反手", "抽"),
-    "正手封网": ("中前场/防守反应", "正手", "封网"),
-    "反手封网": ("中前场/防守反应", "反手", "封网"),
-    "头顶封网": ("中前场/防守反应", "正手", "封网"),
+    "正手击高球": ("后场技术", "正手", "高远"),
+    "反手击高球": ("后场技术", "反手", "高远"),
+    "头顶击高球": ("后场技术", "头顶", "高远"),
+    "头顶手击高球": ("后场技术", "头顶", "高远"),
+    "正手吊球": ("后场技术", "正手", "吊"),
+    "反手吊球": ("后场技术", "反手", "吊"),
+    "头顶吊球": ("后场技术", "头顶", "吊"),
+    "正手杀球": ("后场技术", "正手", "杀"),
+    "反手杀球": ("后场技术", "反手", "杀"),
+    "头顶杀球": ("后场技术", "头顶", "杀"),
+    "正手劈球": ("后场技术", "正手", "劈吊"),
+    "反手劈球": ("后场技术", "反手", "劈吊"),
+    "头顶劈球": ("后场技术", "头顶", "劈吊"),
+    "正手搓球": ("网前技术", "正手", "搓放网"),
+    "反手搓球": ("网前技术", "反手", "搓放网"),
+    "正手放网前球": ("网前技术", "正手", "搓放网"),
+    "反手放网前球": ("网前技术", "反手", "搓放网"),
+    "正手勾球": ("网前技术", "正手", "勾球"),
+    "反手勾球": ("网前技术", "反手", "勾球"),
+    "正手推球": ("网前技术", "正手", "推"),
+    "反手推球": ("网前技术", "反手", "推"),
+    "正手挑球": ("网前技术", "正手", "挑"),
+    "反手挑球": ("网前技术", "反手", "挑"),
+    "正手扑球": ("网前技术", "正手", "扑"),
+    "反手扑球": ("网前技术", "反手", "扑"),
+    "正手抽球": ("中场技术", "正手", "抽"),
+    "反手抽球": ("中场技术", "反手", "抽"),
+    "正手封网": ("网前技术", "正手", "封网"),
+    "反手封网": ("网前技术", "反手", "封网"),
+    "头顶封网": ("网前技术", "正手", "封网"),
 }
 
 VIEWDESCP = ["视角正常", "视角异常", "击球缺帧"]
@@ -70,11 +102,12 @@ NOTSUIT = {
 HAND_TYPES = ["适用", "不适用", "待定"]
 SHOT_TECHNIQUES = {
     key: TECHNIQUES[key]
-    for key in ["后场上手", "网前三技术", "中前场/防守反应"]
+    for key in ["网前技术", "中场技术", "后场技术"]
 }
 SERVE_LANDING_AREAS = ["1", "2", "3", "4", "5", "6"]
 SHOT_ROUTES = ["直线", "斜线", "中路"]
 COURT_POSITIONS = [
+    "待定",
     "前左", "前中", "前右",
     "中左", "中中", "中右",
     "后左", "后中", "后右",
@@ -235,6 +268,7 @@ class TechniqueSelectionDialog(QDialog):
         if alias:
             return alias
 
+        major = normalize_technique_major(major, minor)
         if major in TECHNIQUES:
             for technique_hand in TECHNIQUE_HANDS.get(major, []):
                 if minor.startswith(technique_hand):
@@ -251,8 +285,8 @@ class TechniqueSelectionDialog(QDialog):
         return None
 
     def _normalize_technique_selection(self, selection, data_source):
-        current_major = selection.get('major')
         current_minor = selection.get('minor')
+        current_major = normalize_technique_major(selection.get('major'), current_minor)
         current_technique_hand = selection.get('technique_hand')
 
         legacy = self._split_legacy_technique(current_major, current_minor)
@@ -547,6 +581,7 @@ class DetailSelectionDialogBase(QDialog):
         alias = LEGACY_TECHNIQUE_ALIASES.get(minor)
         if alias:
             return alias
+        major = normalize_technique_major(major, minor)
         if major in TECHNIQUES:
             for technique_hand in TECHNIQUE_HANDS.get(major, []):
                 if minor.startswith(technique_hand):
@@ -699,8 +734,8 @@ class ShotTechniqueSelectionDialog(DetailSelectionDialogBase):
         self._refresh_technique_lists(data_source)
 
     def _normalize_shot_selection(self, selection, data_source):
-        major = selection.get("major")
         minor = selection.get("minor")
+        major = normalize_technique_major(selection.get("major"), minor)
         technique_hand = selection.get("technique_hand")
         legacy = self._split_legacy_technique(major, minor)
         if legacy:
@@ -778,7 +813,7 @@ class RallyEndReasonDialog(DetailSelectionDialogBase):
         self.reason_list = self.add_list_column("制胜分原因")
         self.reason_list.addItems(TECHNIQUES["制胜分原因"])
         self.add_buttons()
-        self._select_list_text(self.reason_list, (current_selection or {}).get("minor"))
+        self._select_list_text(self.reason_list, normalize_rally_end_reason((current_selection or {}).get("minor")))
         self.reason_list.setFocus()
 
     def get_selection(self):
@@ -799,6 +834,7 @@ class DrawingLabel(QLabel):
     new_point_drawn = pyqtSignal(QPoint)
     object_selected = pyqtSignal(str)
     object_moved = pyqtSignal(str, object)
+    court_point_moved = pyqtSignal(str, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -813,6 +849,11 @@ class DrawingLabel(QLabel):
         self.resize_handle_size = 10
         self.original_video_width = 1
         self.original_video_height = 1
+        self.court_calibration = None
+        self.court_edit_enabled = False
+        self.selected_court_point_id = None
+        self.selected_court_point_original_video = None
+        self.court_point_hit_radius = 14
         self.setMouseTracking(True)
 
     def set_draw_mode(self, mode):
@@ -830,6 +871,47 @@ class DrawingLabel(QLabel):
             self.selected_object_id = object_id
             self.update()
 
+    def set_court_calibration(self, court_calibration):
+        self.court_calibration = court_calibration
+        self.selected_court_point_id = None
+        self.update()
+
+    def set_court_edit_enabled(self, enabled):
+        self.court_edit_enabled = bool(enabled)
+        self.selected_court_point_id = None
+        if self.court_edit_enabled:
+            self.set_draw_mode("select")
+        else:
+            self.set_draw_mode(self.draw_mode)
+        self.update()
+
+    def _court_points(self):
+        if not isinstance(self.court_calibration, dict):
+            return {}
+        points = self.court_calibration.get("points")
+        return points if isinstance(points, dict) else {}
+
+    def _get_court_point_video(self, point_id):
+        point = self._court_points().get(point_id)
+        if not isinstance(point, dict):
+            return None
+        try:
+            return QPoint(int(point.get("x", 0)), int(point.get("y", 0)))
+        except (TypeError, ValueError):
+            return None
+
+    def _hit_test_court_point(self, ui_pos):
+        if not self.court_edit_enabled:
+            return None
+        for point_id in reversed(COURT_POINT_ORDER):
+            point_video = self._get_court_point_video(point_id)
+            if point_video is None:
+                continue
+            point_ui = self.video_coord_to_ui_coord_point(point_video)
+            if (point_ui - ui_pos).manhattanLength() <= self.court_point_hit_radius:
+                return point_id
+        return None
+
     def mousePressEvent(self, event):
         """完全遵循 v0.6.3 的逻辑，但优化了点选优先级"""
         if event.button() != Qt.MouseButton.LeftButton:
@@ -838,6 +920,15 @@ class DrawingLabel(QLabel):
         self.action_start_pos_ui = event.pos()
 
         if self.draw_mode == "select":
+            court_point_id = self._hit_test_court_point(self.action_start_pos_ui)
+            if court_point_id:
+                self.action_state = "court_dragging"
+                self.selected_court_point_id = court_point_id
+                self.selected_court_point_original_video = self._get_court_point_video(court_point_id)
+                self.object_selected.emit("")
+                self.update()
+                return
+
             # 1. 检查是否点中缩放手柄 (最高优先级)
             if self.selected_object_id and self.resize_handle_rect_ui.contains(self.action_start_pos_ui):
                 self.action_state = "resizing"
@@ -901,7 +992,22 @@ class DrawingLabel(QLabel):
         if not self.action_start_pos_ui: return
 
         # --- 拖动/缩放的自我刷新逻辑 ---
-        if self.action_state == "resizing" and self.selected_obj_original_geom_video:
+        if self.action_state == "court_dragging" and self.selected_court_point_id and self.selected_court_point_original_video:
+            delta_ui = current_pos_ui - self.action_start_pos_ui
+            x_scale = self.original_video_width / self.width()
+            y_scale = self.original_video_height / self.height()
+            delta_video = QPoint(int(delta_ui.x() * x_scale), int(delta_ui.y() * y_scale))
+            new_pos = self.selected_court_point_original_video + delta_video
+            new_x = max(0, min(self.original_video_width, new_pos.x()))
+            new_y = max(0, min(self.original_video_height, new_pos.y()))
+            point = self._court_points().get(self.selected_court_point_id)
+            if isinstance(point, dict):
+                point["x"] = new_x
+                point["y"] = new_y
+                self.update()
+                self.court_point_moved.emit(self.selected_court_point_id, [new_x, new_y])
+
+        elif self.action_state == "resizing" and self.selected_obj_original_geom_video:
             original_geom = self.selected_obj_original_geom_video
             target_br_video = self.ui_coord_to_video_coord_point(current_pos_ui)
             new_width = target_br_video.x() - original_geom.x()
@@ -960,6 +1066,7 @@ class DrawingLabel(QLabel):
             self.action_state = "idle"
             self.action_start_pos_ui = None
             self.selected_obj_original_geom_video = None
+            self.selected_court_point_original_video = None
             self.preview_rect_ui = None
             self.update()
     
@@ -969,6 +1076,7 @@ class DrawingLabel(QLabel):
         if not self.pixmap(): return
         
         painter = QPainter(self)
+        self._draw_court_overlay(painter)
         
         for obj in self.objects:
             is_selected = (obj['id'] == self.selected_object_id)
@@ -1002,6 +1110,59 @@ class DrawingLabel(QLabel):
             painter.setPen(preview_pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(self.preview_rect_ui)
+
+    def _draw_court_overlay(self, painter):
+        court = self.court_calibration
+        if not isinstance(court, dict) or not court.get("visible", True):
+            return
+        points = self._court_points()
+        if not points:
+            return
+
+        def ui_point(point_id):
+            point_video = self._get_court_point_video(point_id)
+            if point_video is None:
+                return None
+            return self.video_coord_to_ui_coord_point(point_video)
+
+        court_lines = [
+            ("singles_far_left", "singles_far_right"),
+            ("singles_far_right", "singles_near_right"),
+            ("singles_near_right", "singles_near_left"),
+            ("singles_near_left", "singles_far_left"),
+            ("net_left_top", "net_right_top"),
+            ("net_right_bottom", "net_left_bottom"),
+            ("net_left_top", "net_left_bottom"),
+            ("net_right_top", "net_right_bottom"),
+        ]
+        line_pen = QPen(QColor(0, 220, 255), 2)
+        line_pen.setCosmetic(True)
+        painter.setPen(line_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for start_id, end_id in court_lines:
+            start = ui_point(start_id)
+            end = ui_point(end_id)
+            if start is not None and end is not None:
+                painter.drawLine(start, end)
+
+        if not self.court_edit_enabled:
+            return
+
+        for point_id in COURT_POINT_ORDER:
+            center = ui_point(point_id)
+            if center is None:
+                continue
+            is_selected = point_id == self.selected_court_point_id
+            radius = 7 if is_selected else 5
+            pen = QPen(QColor(255, 255, 255), 2)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(QColor(255, 140, 0) if is_selected else QColor(0, 220, 255))
+            painter.drawEllipse(center, radius, radius)
+
+            label = points.get(point_id, {}).get("label") or COURT_POINT_LABELS.get(point_id, point_id)
+            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            painter.drawText(center + QPoint(8, -8), label)
             
     # --- 坐标转换函数 (保持不变) ---
     def set_video_dimensions(self, w, h): 

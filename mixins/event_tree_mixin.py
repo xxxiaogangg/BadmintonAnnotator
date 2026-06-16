@@ -3,11 +3,13 @@
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QAbstractItemView, QTreeWidgetItem, QTreeWidgetItemIterator, QMessageBox
 
+from core.data_model import COURT_SIDE_ASSIGNMENT_VERSION, normalize_court_side_assignment
 from widgets.drawing_label import (
     RallyEndReasonDialog,
     ServeTechniqueSelectionDialog,
     ShotTechniqueSelectionDialog,
 )
+from widgets.serve_player_dialog import CourtSideAssignmentDialog
 
 
 class EventTreeMixin:
@@ -29,18 +31,6 @@ class EventTreeMixin:
 
     def _format_technique_text(self, details):
         hand = details.get("hand", "待定")
-        if hand != "适用":
-            return str(hand) if hand else "待定"
-
-        minor = details.get("minor", "待定")
-        if not minor or minor == "待定":
-            return "待定"
-
-        technique_hand = details.get("technique_hand", "")
-        if technique_hand and technique_hand != "待定":
-            technique_text = f"{technique_hand}{minor}"
-        else:
-            technique_text = minor
 
         extra_parts = []
         serve_landing = details.get("serve_landing")
@@ -52,6 +42,20 @@ class EventTreeMixin:
         court_position = details.get("court_position")
         if court_position and court_position != "待定":
             extra_parts.append(f"位置:{court_position}")
+
+        if hand != "适用":
+            base_text = str(hand) if hand else "待定"
+            return " | ".join([base_text] + extra_parts) if extra_parts else base_text
+
+        minor = details.get("minor", "待定")
+        if not minor or minor == "待定":
+            return " | ".join(["待定"] + extra_parts) if extra_parts else "待定"
+
+        technique_hand = details.get("technique_hand", "")
+        if technique_hand and technique_hand != "待定":
+            technique_text = f"{technique_hand}{minor}"
+        else:
+            technique_text = minor
 
         if extra_parts:
             return " | ".join([technique_text] + extra_parts)
@@ -241,8 +245,114 @@ class EventTreeMixin:
         event_id = item.data(0, Qt.ItemDataRole.UserRole + 1)
         if not event_id:
             return
+        self._edit_event_detail_by_id(event_id)
 
-        # 更新最后选中的事件ID，用于连续调整功能
+    def _has_valid_court_side_assignment(self):
+        assignment = normalize_court_side_assignment(
+            self.annotations.get("court_side_assignment"),
+            self.annotations.get("match_info", {}),
+        )
+        self.annotations["court_side_assignment"] = assignment
+        return assignment is not None
+
+    def _ensure_court_side_assignment_for_event(self, event_type):
+        if event_type not in ["RALLY_START", "SHOT"]:
+            return True
+        if self._has_valid_court_side_assignment():
+            return True
+
+        player_a = self.annotations.get("match_info", {}).get("player_a") or self.player_a_name
+        player_b = self.annotations.get("match_info", {}).get("player_b") or self.player_b_name
+        if not player_a or not player_b or player_a == player_b:
+            QMessageBox.warning(self, "站位信息缺失", "请先在比赛信息中设置两名不同的球员。")
+            return False
+
+        dialog = CourtSideAssignmentDialog(player_a, player_b, self)
+        if not dialog.exec() or not dialog.assignment:
+            return False
+
+        self.annotations["court_side_assignment"] = {
+            "version": COURT_SIDE_ASSIGNMENT_VERSION,
+            "initial_top_player": dialog.assignment["initial_top_player"],
+            "initial_bottom_player": dialog.assignment["initial_bottom_player"],
+            "source": "manual",
+        }
+        if hasattr(self, "_update_court_side_status_label"):
+            self._update_court_side_status_label()
+        self.set_dirty()
+        return True
+
+    def _get_event_index(self, target_event):
+        target_event_id = target_event.get("event_id") if isinstance(target_event, dict) else None
+        for index, event in enumerate(self.annotations.get("events", [])):
+            if event is target_event:
+                return index
+            if target_event_id and event.get("event_id") == target_event_id:
+                return index
+        return -1
+
+    def _get_set_number_for_event(self, target_event):
+        event_index = self._get_event_index(target_event)
+        if event_index < 0:
+            return 1
+        set_count = 0
+        for event in self.annotations.get("events", [])[:event_index + 1]:
+            if event.get("type") == "SET_START":
+                set_count += 1
+        return max(1, set_count)
+
+    def _get_rally_start_for_event(self, target_event):
+        if not isinstance(target_event, dict):
+            return None
+        if target_event.get("type") == "RALLY_START":
+            return target_event
+        event_index = self._get_event_index(target_event)
+        if event_index < 0:
+            return None
+        events = self.annotations.get("events", [])
+        for event in reversed(events[:event_index + 1]):
+            if event.get("type") == "RALLY_START":
+                return event
+        return None
+
+    def _is_court_side_swapped_for_event(self, target_event):
+        set_number = self._get_set_number_for_event(target_event)
+        if set_number == 2:
+            return True
+        if set_number == 3:
+            rally_start = self._get_rally_start_for_event(target_event)
+            score = rally_start.get("details", {}).get("score_at_start", []) if rally_start else []
+            if isinstance(score, list) and len(score) >= 2:
+                return max(score[0], score[1]) >= 11
+        return False
+
+    def _resolve_player_court_half(self, target_event, player_name=None):
+        assignment = normalize_court_side_assignment(
+            self.annotations.get("court_side_assignment"),
+            self.annotations.get("match_info", {}),
+        )
+        if not assignment:
+            return None
+        if player_name is None:
+            details = target_event.get("details", {}) if isinstance(target_event, dict) else {}
+            player_name = details.get("serving_player") or details.get("player")
+        if not player_name:
+            return None
+
+        top_player = assignment.get("initial_top_player")
+        bottom_player = assignment.get("initial_bottom_player")
+        if self._is_court_side_swapped_for_event(target_event):
+            top_player, bottom_player = bottom_player, top_player
+        if player_name == top_player:
+            return "top"
+        if player_name == bottom_player:
+            return "bottom"
+        return None
+
+    def _edit_event_detail_by_id(self, event_id):
+        if not event_id:
+            return
+
         self.last_selected_event_id = event_id
         if self.shot_loop_enabled:
             self._update_shot_loop_bounds()
@@ -253,54 +363,63 @@ class EventTreeMixin:
 
         event_type = clicked_event['type']
 
-        # 允许编辑 RALLY_START, SHOT, RALLY_END
-        if event_type in ['RALLY_START', 'SHOT', 'RALLY_END']:
-            # 对话框防抖：如果已经打开，则直接返回
-            if self._tech_dialog_open:
+        if event_type not in ['RALLY_START', 'SHOT', 'RALLY_END']:
+            return
+        if self._tech_dialog_open:
+            return
+        if not self._ensure_court_side_assignment_for_event(event_type):
+            return
+        if hasattr(self, "ensure_serving_player_for_event"):
+            if not self.ensure_serving_player_for_event(clicked_event):
                 return
-            self._tech_dialog_open = True
-            dialog = self._create_event_detail_dialog(event_type, clicked_event['details'])
+
+        self._tech_dialog_open = True
+        try:
+            details_for_dialog = clicked_event.setdefault('details', {})
+            if hasattr(self, "apply_ai_court_position_default"):
+                changes = self.apply_ai_court_position_default(clicked_event, details_for_dialog)
+                if changes:
+                    self._update_event_item_text(clicked_event)
+                    self.set_dirty()
+            dialog = self._create_event_detail_dialog(event_type, details_for_dialog)
             if not dialog:
-                self._tech_dialog_open = False
                 return
-
-            # 在"标注击球事件"页面下，默认第一列选择"适用"
-            if (
-                event_type in ["RALLY_START", "SHOT"]
-                and hasattr(self, 'right_page_combo')
-                and self.right_page_combo.currentIndex() == 1
-                and hasattr(dialog, "set_status")
-            ):
+            if self._should_default_detail_status_to_applicable(event_type, dialog):
                 dialog.set_status("适用")
-
-            # 关闭时无论结果如何都清理标志
             result = dialog.exec()
+        finally:
             self._tech_dialog_open = False
-            if result:
-                selection = dialog.get_selection()
-                if selection:
-                    clicked_event['details'].update(selection)
-                    # 如果编辑的是可能影响比分的事件，重新计算比分
-                    if clicked_event['type'] in ['RALLY_END', 'SET_START']:
-                        self.recalculate_scores()
-                    print(f"已更新事件 {event_id} 的细节。")
-                    # 跳转到下一条，若无下一条则停留当前
-                    next_event_id = self._get_next_event_id(event_id)
-                    target_event_id = next_event_id or event_id
-                    updated = self._update_event_item_text(clicked_event)
-                    if not updated:
-                        self.refresh_all_ui(scroll_to_event_id=target_event_id)
-                    self._select_event_in_tree(target_event_id)
-                    self.event_tree.setFocus()
 
-                    # 让视频画面也跳转到目标事件的帧
-                    if self.video_worker and target_event_id:
-                        target_event = self._get_event_by_id(target_event_id)
-                        if target_event and 'frame' in target_event:
-                            self.video_worker.seek(target_event['frame'])
+        if result:
+            selection = dialog.get_selection()
+            if selection:
+                clicked_event['details'].update(selection)
+                if clicked_event['type'] in ['RALLY_END', 'SET_START']:
+                    self.recalculate_scores()
+                print(f"已更新事件 {event_id} 的细节。")
+                next_event_id = self._get_next_event_id(event_id)
+                target_event_id = next_event_id or event_id
+                updated = self._update_event_item_text(clicked_event)
+                if not updated:
+                    self.refresh_all_ui(scroll_to_event_id=target_event_id)
+                self._select_event_in_tree(target_event_id)
+                self.event_tree.setFocus()
+                self.set_dirty()
 
-        # 编辑后，可能会改变 hand 字段（待定 / 不适用 / 适用），需要刷新审阅统计
+                if self.video_worker and target_event_id:
+                    target_event = self._get_event_by_id(target_event_id)
+                    if target_event and 'frame' in target_event:
+                        self.video_worker.seek(target_event['frame'])
+
         self.update_review_stats()
+
+    def _should_default_detail_status_to_applicable(self, event_type, dialog):
+        return (
+            event_type in ["RALLY_START", "SHOT"]
+            and hasattr(self, 'right_page_combo')
+            and self.right_page_combo.currentIndex() == 1
+            and hasattr(dialog, "set_status")
+        )
 
     def _find_nearest_event_id_by_frame(self, frame_num):
         """返回与frame_num最近的事件ID，若不存在则返回None"""
@@ -586,62 +705,7 @@ class EventTreeMixin:
         event_id = selected_item.data(0, Qt.ItemDataRole.UserRole + 1)
         if not event_id:
             return
-
-        # 找到对应的事件对象
-        events = self.annotations.get('events', [])
-        clicked_event = next((e for e in events if e['event_id'] == event_id), None)
-        if not clicked_event:
-            return
-
-        event_type = clicked_event['type']
-
-        # 只允许编辑 RALLY_START, SHOT, RALLY_END
-        if event_type not in ['RALLY_START', 'SHOT', 'RALLY_END']:
-            return
-
-        # 打开编辑对话框（复用双击的逻辑），带防抖
-        if self._tech_dialog_open:
-            return
-        self._tech_dialog_open = True
-        dialog = self._create_event_detail_dialog(event_type, clicked_event['details'])
-        if not dialog:
-            self._tech_dialog_open = False
-            return
-
-        # 在"标注击球事件"页面下，默认第一列选择"适用"
-        if (
-            event_type in ["RALLY_START", "SHOT"]
-            and hasattr(self, 'right_page_combo')
-            and self.right_page_combo.currentIndex() == 1
-            and hasattr(dialog, "set_status")
-        ):
-            dialog.set_status("适用")
-
-        result = dialog.exec()
-        self._tech_dialog_open = False
-        if result:
-            selection = dialog.get_selection()
-            if selection:
-                clicked_event['details'].update(selection)
-                # 如果编辑的是可能影响比分的事件，重新计算比分
-                if clicked_event['type'] in ['RALLY_END', 'SET_START']:
-                    self.recalculate_scores()
-                print(f"已更新事件 {event_id} 的细节。")
-                next_event_id = self._get_next_event_id(event_id)
-                target_event_id = next_event_id or event_id
-                updated = self._update_event_item_text(clicked_event)
-                if not updated:
-                    self.refresh_all_ui(scroll_to_event_id=target_event_id)
-                # 关闭后保持聚焦与选中项，并默认跳转到下一条
-                self._select_event_in_tree(target_event_id)
-                self.event_tree.setFocus()
-                self.set_dirty()
-
-                # 让视频画面也跳转到目标事件的帧
-                if self.video_worker and target_event_id:
-                    target_event = self._get_event_by_id(target_event_id)
-                    if target_event and 'frame' in target_event:
-                        self.video_worker.seek(target_event['frame'])
+        self._edit_event_detail_by_id(event_id)
 
     def _select_event_in_tree(self, event_id):
         """在事件树中选中指定的事件"""

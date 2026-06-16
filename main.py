@@ -3,6 +3,7 @@
 import sys
 import uuid
 import cv2
+import numpy as np
 import os
 import json
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -14,10 +15,19 @@ from PyQt6.QtWidgets import (QLabel, QSplitter, QComboBox, QMessageBox,
                              QStackedWidget, QLineEdit, QAbstractItemView)
 
 from core.video_worker import VideoWorker
+from ai.person_detector import YoloPersonDetector
 from widgets.drawing_label import DrawingLabel
 from widgets.match_setup_dialog import MatchSetupDialog # 导入新对话框
-from widgets.serve_player_dialog import ServePlayerDialog, WinnerSelectionDialog
-from core.data_model import get_new_annotation_structure, normalize_annotations
+from widgets.serve_player_dialog import CourtSideAssignmentDialog, ServePlayerDialog, WinnerSelectionDialog
+from core.data_model import (
+    COURT_POINT_ORDER,
+    COURT_SIDE_ASSIGNMENT_VERSION,
+    get_default_court_calibration,
+    get_new_annotation_structure,
+    normalize_annotations,
+    normalize_court_calibration,
+    normalize_court_side_assignment,
+)
 from mixins.event_tree_mixin import EventTreeMixin
 from mixins.review_mixin import ReviewMixin
 
@@ -45,6 +55,10 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         self.play_b_name = ""
         self.shot_loop_enabled = False
         self.shot_loop_bounds = None
+        self.current_rgb_frame = None
+        self.current_frame_size = None
+        self.person_detector = None
+        self.person_detector_warning_shown = False
         # 审阅相关
         self.event_items = {}  # event_id -> QTreeWidgetItem，用于导航和审阅
         self.event_by_id = {}  # event_id -> event dict，减少重复查找
@@ -137,6 +151,7 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         # <<< ================== 核心修改 1: 连接编辑信号 ================== >>>
         self.video_label.object_selected.connect(self.on_object_selected_from_canvas)
         self.video_label.object_moved.connect(self.on_object_moved)
+        self.video_label.court_point_moved.connect(self.on_court_point_moved)
         
         layout.addWidget(self.video_label, 1)
 
@@ -288,6 +303,9 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         page_review_layout.addWidget(self.review_box)
         self.right_stacked.addWidget(page_review)
 
+        # 页面3：AI辅助
+        self.right_stacked.addWidget(self._create_ai_panel())
+
         layout.addWidget(self.right_stacked)
 
         # --- 通用事件浏览器（两个页面共用） ---
@@ -321,7 +339,418 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
             else:
                 # 恢复为默认最大高度
                 self.right_stacked.setMaximumHeight(16777215)
-   
+
+    def _create_ai_panel(self):
+        ai_widget = QWidget()
+        layout = QVBoxLayout(ai_widget)
+        layout.setContentsMargins(5, 5, 5, 5)
+
+        court_box = QGroupBox("场地标定")
+        court_layout = QVBoxLayout(court_box)
+
+        court_toggle_layout = QHBoxLayout()
+        self.court_edit_toggle = QCheckBox("调整场地点")
+        self.court_edit_toggle.toggled.connect(self.on_court_edit_toggled)
+        self.reset_court_btn = QPushButton("重置默认8点")
+        self.reset_court_btn.clicked.connect(self.reset_court_calibration)
+        court_toggle_layout.addWidget(self.court_edit_toggle)
+        court_toggle_layout.addWidget(self.reset_court_btn)
+        court_layout.addLayout(court_toggle_layout)
+
+        self.court_status_label = QLabel("未加载场地")
+        court_layout.addWidget(self.court_status_label)
+
+        layout.addWidget(court_box)
+
+        side_box = QGroupBox("上下半场")
+        side_layout = QVBoxLayout(side_box)
+        self.court_side_status_label = QLabel("未设置")
+        self.set_court_side_btn = QPushButton("设置第1局开局站位")
+        self.set_court_side_btn.clicked.connect(self.configure_court_side_assignment)
+        side_layout.addWidget(self.court_side_status_label)
+        side_layout.addWidget(self.set_court_side_btn)
+        layout.addWidget(side_box)
+
+        detector_box = QGroupBox("YOLO位置默认")
+        detector_layout = QVBoxLayout(detector_box)
+        self.person_detector_status_label = QLabel("按需加载；不可用时自动跳过")
+        detector_layout.addWidget(self.person_detector_status_label)
+        layout.addWidget(detector_box)
+
+        layout.addStretch()
+        return ai_widget
+
+    def _get_video_resolution(self):
+        video_info = self.annotations.get("video_info", {}) if self.annotations else {}
+        resolution = video_info.get("resolution")
+        if isinstance(resolution, (list, tuple)) and len(resolution) >= 2:
+            try:
+                width = int(resolution[0])
+                height = int(resolution[1])
+                if width > 0 and height > 0:
+                    return [width, height]
+            except (TypeError, ValueError):
+                pass
+        width = getattr(self.video_label, "original_video_width", 1280)
+        height = getattr(self.video_label, "original_video_height", 720)
+        return [width, height]
+
+    def _ensure_court_calibration(self):
+        if not self.annotations:
+            return None
+        court = normalize_court_calibration(
+            self.annotations.get("court_calibration"),
+            self._get_video_resolution(),
+        )
+        self.annotations["court_calibration"] = court
+        return court
+
+    def _sync_court_overlay(self):
+        court = self._ensure_court_calibration()
+        if hasattr(self, "video_label"):
+            self.video_label.set_court_calibration(court)
+        self._sync_court_edit_toggle()
+        self._update_court_status_label()
+        self._update_court_side_status_label()
+
+    def _sync_court_edit_toggle(self):
+        court = self.annotations.get("court_calibration") if self.annotations else None
+        edit_enabled = bool(court and not court.get("locked", True))
+        if hasattr(self, "court_edit_toggle"):
+            self.court_edit_toggle.blockSignals(True)
+            self.court_edit_toggle.setChecked(edit_enabled)
+            self.court_edit_toggle.blockSignals(False)
+        if hasattr(self, "video_label"):
+            self.video_label.set_court_edit_enabled(edit_enabled)
+
+    def _update_court_status_label(self):
+        if not hasattr(self, "court_status_label"):
+            return
+        court = self.annotations.get("court_calibration") if self.annotations else None
+        if not isinstance(court, dict):
+            self.court_status_label.setText("未加载场地")
+            return
+        points = court.get("points") if isinstance(court.get("points"), dict) else {}
+        point_count = sum(1 for point_id in COURT_POINT_ORDER if point_id in points)
+        mode_text = "可调整" if not court.get("locked", True) else "已锁定"
+        self.court_status_label.setText(f"{mode_text} | 单打4点 + 球网4点 ({point_count}/8)")
+
+    def _normalize_current_court_side_assignment(self):
+        if not self.annotations:
+            return None
+        assignment = normalize_court_side_assignment(
+            self.annotations.get("court_side_assignment"),
+            self.annotations.get("match_info", {}),
+        )
+        self.annotations["court_side_assignment"] = assignment
+        return assignment
+
+    def _update_court_side_status_label(self):
+        if not hasattr(self, "court_side_status_label"):
+            return
+        assignment = self._normalize_current_court_side_assignment()
+        if not assignment:
+            self.court_side_status_label.setText("未设置")
+            return
+        top_player = assignment.get("initial_top_player", "")
+        bottom_player = assignment.get("initial_bottom_player", "")
+        self.court_side_status_label.setText(f"第1局开局：上方 {top_player} / 下方 {bottom_player}")
+
+    def configure_court_side_assignment(self):
+        if not self.annotations:
+            QMessageBox.information(self, "提示", "请先打开视频。")
+            return
+        match_info = self.annotations.get("match_info", {})
+        player_a = match_info.get("player_a") or self.player_a_name
+        player_b = match_info.get("player_b") or self.player_b_name
+        if not player_a or not player_b or player_a == player_b:
+            QMessageBox.warning(self, "站位信息缺失", "请先在比赛信息中设置两名不同的球员。")
+            return
+        dialog = CourtSideAssignmentDialog(player_a, player_b, self)
+        if not dialog.exec() or not dialog.assignment:
+            return
+        self.annotations["court_side_assignment"] = {
+            "version": COURT_SIDE_ASSIGNMENT_VERSION,
+            "initial_top_player": dialog.assignment["initial_top_player"],
+            "initial_bottom_player": dialog.assignment["initial_bottom_player"],
+            "source": "manual",
+        }
+        self._update_court_side_status_label()
+        self.set_dirty()
+
+    def on_court_edit_toggled(self, checked):
+        if not self.annotations:
+            self.court_edit_toggle.blockSignals(True)
+            self.court_edit_toggle.setChecked(False)
+            self.court_edit_toggle.blockSignals(False)
+            QMessageBox.information(self, "提示", "请先打开视频。")
+            return
+        court = self._ensure_court_calibration()
+        if not court:
+            return
+        court["locked"] = not checked
+        court["visible"] = True
+        if checked:
+            self.on_mode_button_clicked("select")
+        self.video_label.set_court_calibration(court)
+        self.video_label.set_court_edit_enabled(checked)
+        self._update_court_status_label()
+        self.set_dirty()
+
+    def reset_court_calibration(self):
+        if not self.annotations:
+            QMessageBox.information(self, "提示", "请先打开视频。")
+            return
+        court = get_default_court_calibration(self._get_video_resolution())
+        court["locked"] = not self.court_edit_toggle.isChecked()
+        self.annotations["court_calibration"] = court
+        self._sync_court_overlay()
+        self.set_dirty()
+
+    def on_court_point_moved(self, point_id, coords):
+        court = self.annotations.get("court_calibration") if self.annotations else None
+        if not isinstance(court, dict):
+            return
+        points = court.get("points")
+        if not isinstance(points, dict) or point_id not in points:
+            return
+        try:
+            points[point_id]["x"] = int(coords[0])
+            points[point_id]["y"] = int(coords[1])
+        except (TypeError, ValueError, IndexError):
+            return
+        self._update_court_status_label()
+        self.set_dirty()
+
+    def _get_person_detector(self):
+        if self.person_detector is None:
+            self.person_detector = YoloPersonDetector()
+        return self.person_detector
+
+    def _set_person_detector_status(self, message):
+        if hasattr(self, "person_detector_status_label"):
+            self.person_detector_status_label.setText(message)
+
+    def _note_person_detector_unavailable(self):
+        detector = self.person_detector
+        reason = detector.last_error if detector and detector.last_error else "YOLO不可用，位置默认保持待定。"
+        self._set_person_detector_status("不可用，已自动跳过")
+        if not self.person_detector_warning_shown:
+            self.statusBar().showMessage(reason, 4000)
+            self.person_detector_warning_shown = True
+
+    def _get_ai_frame_for_event(self, frame_num):
+        if (
+            self.current_rgb_frame is not None
+            and self.current_frame_num == frame_num
+            and self.current_frame_size
+        ):
+            frame = self.current_rgb_frame
+            frame_h, frame_w = frame.shape[:2]
+            original_w = max(1, int(getattr(self.video_label, "original_video_width", frame_w)))
+            original_h = max(1, int(getattr(self.video_label, "original_video_height", frame_h)))
+            return frame, original_w / frame_w, original_h / frame_h
+
+        video_path = self.annotations.get("video_info", {}).get("path")
+        if not video_path or not os.path.exists(video_path):
+            return None, 1.0, 1.0
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            cap.release()
+            return None, 1.0, 1.0
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+        ok, frame_bgr = cap.read()
+        cap.release()
+        if not ok:
+            return None, 1.0, 1.0
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        return frame_rgb, 1.0, 1.0
+
+    def _court_geometry_for_ai(self):
+        court = self._ensure_court_calibration()
+        if not court:
+            return None
+        points = court.get("points") if isinstance(court.get("points"), dict) else {}
+        required = [
+            "singles_far_left",
+            "singles_far_right",
+            "singles_near_right",
+            "singles_near_left",
+            "net_left_bottom",
+            "net_right_bottom",
+        ]
+        if not all(point_id in points for point_id in required):
+            return None
+        try:
+            court_polygon = np.array(
+                [
+                    [points["singles_far_left"]["x"], points["singles_far_left"]["y"]],
+                    [points["singles_far_right"]["x"], points["singles_far_right"]["y"]],
+                    [points["singles_near_right"]["x"], points["singles_near_right"]["y"]],
+                    [points["singles_near_left"]["x"], points["singles_near_left"]["y"]],
+                ],
+                dtype=np.float32,
+            )
+            canonical = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+            homography = cv2.getPerspectiveTransform(court_polygon, canonical)
+            net_points_video = np.array(
+                [
+                    [
+                        [points["net_left_bottom"]["x"], points["net_left_bottom"]["y"]],
+                        [points["net_right_bottom"]["x"], points["net_right_bottom"]["y"]],
+                    ]
+                ],
+                dtype=np.float32,
+            )
+            net_points_court = cv2.perspectiveTransform(net_points_video, homography)[0]
+            return {
+                "court_polygon": court_polygon,
+                "homography": homography,
+                "net_left": net_points_court[0],
+                "net_right": net_points_court[1],
+            }
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    def _net_y_at_court_x(self, court_x, geometry):
+        left = geometry["net_left"]
+        right = geometry["net_right"]
+        left_x, left_y = float(left[0]), float(left[1])
+        right_x, right_y = float(right[0]), float(right[1])
+        if abs(right_x - left_x) < 1e-6:
+            return (left_y + right_y) / 2
+        ratio = (float(court_x) - left_x) / (right_x - left_x)
+        return left_y + ratio * (right_y - left_y)
+
+    def _court_position_from_video_point(self, point_video, geometry, court_half):
+        src = np.array([[[float(point_video[0]), float(point_video[1])]]], dtype=np.float32)
+        mapped = cv2.perspectiveTransform(src, geometry["homography"])[0, 0]
+        x, y = float(mapped[0]), float(mapped[1])
+        if not np.isfinite(x) or not np.isfinite(y):
+            return None
+        net_y = self._net_y_at_court_x(x, geometry)
+        if court_half == "top":
+            denominator = max(net_y, 1e-6)
+            depth = (net_y - y) / denominator
+        else:
+            denominator = max(1 - net_y, 1e-6)
+            depth = (y - net_y) / denominator
+        x = min(1, max(0, x))
+        depth = min(1, max(0, depth))
+        col = "左" if x < 1 / 3 else ("中" if x < 2 / 3 else "右")
+        row = "前" if depth < 1 / 3 else ("中" if depth < 2 / 3 else "后")
+        return f"{row}{col}"
+
+    def _default_shot_major_from_position(self, court_position):
+        if not court_position:
+            return None
+        if court_position.startswith("前"):
+            return "网前技术"
+        if court_position.startswith("中"):
+            return "中场技术"
+        if court_position.startswith("后"):
+            return "后场技术"
+        return None
+
+    def _suggest_court_position_for_event(self, event_obj):
+        if not event_obj or event_obj.get("type") not in ["RALLY_START", "SHOT"]:
+            return None
+        frame_num = event_obj.get("frame")
+        if frame_num is None:
+            return None
+
+        player_half = self._resolve_player_court_half(event_obj)
+        if player_half not in ["top", "bottom"]:
+            return None
+        court_geometry = self._court_geometry_for_ai()
+        if not court_geometry:
+            return None
+
+        frame_rgb, scale_x, scale_y = self._get_ai_frame_for_event(frame_num)
+        if frame_rgb is None:
+            return None
+        detector = self._get_person_detector()
+        detections = detector.detect(frame_rgb)
+        if detector.disabled:
+            self._note_person_detector_unavailable()
+            return None
+        self._set_person_detector_status("可用")
+        if not detections:
+            return None
+
+        target_candidates = []
+        fallback_candidates = []
+        for detection in detections:
+            foot = detection.get("foot")
+            if not foot:
+                continue
+            foot_video = [int(foot[0] * scale_x), int(foot[1] * scale_y)]
+            position = self._court_position_from_video_point(foot_video, court_geometry, player_half)
+            if not position:
+                continue
+            src = np.array([[[float(foot_video[0]), float(foot_video[1])]]], dtype=np.float32)
+            mapped = cv2.perspectiveTransform(src, court_geometry["homography"])[0, 0]
+            court_x, court_y = float(mapped[0]), float(mapped[1])
+            net_y = self._net_y_at_court_x(court_x, court_geometry)
+            in_target_half = court_y <= net_y + 0.08 if player_half == "top" else court_y >= net_y - 0.08
+            item = dict(detection)
+            item["foot_video"] = foot_video
+            item["court_position"] = position
+            item["court_distance"] = cv2.pointPolygonTest(
+                court_geometry["court_polygon"],
+                tuple(foot_video),
+                True,
+            )
+            item["in_target_half"] = in_target_half
+            bbox = detection.get("bbox", [0, 0, 0, 0])
+            item["bbox_height"] = max(0, int(bbox[3]) - int(bbox[1])) if len(bbox) >= 4 else 0
+            fallback_candidates.append(item)
+            if item["court_distance"] >= -60 and in_target_half:
+                target_candidates.append(item)
+
+        if not fallback_candidates:
+            return None
+        if target_candidates:
+            target = sorted(
+                target_candidates,
+                key=lambda item: (
+                    item["in_target_half"],
+                    item["court_distance"] >= 0,
+                    item["court_distance"],
+                    item["bbox_height"],
+                    item.get("confidence", 0),
+                ),
+                reverse=True,
+            )[0]
+        else:
+            fallback_candidates = sorted(fallback_candidates, key=lambda item: item["foot_video"][1])
+            target = fallback_candidates[0] if player_half == "top" else fallback_candidates[-1]
+        return target.get("court_position")
+
+    def apply_ai_court_position_default(self, event_obj, details):
+        if not isinstance(details, dict):
+            return {}
+        changes = {}
+        current_position = details.get("court_position")
+        if not current_position or current_position == "待定":
+            suggestion = self._suggest_court_position_for_event(event_obj)
+            if suggestion:
+                details["court_position"] = suggestion
+                current_position = suggestion
+                changes["court_position"] = suggestion
+                self._set_person_detector_status(f"可用：建议 {suggestion}")
+                print(f"YOLO位置默认: {event_obj.get('event_id', '')} -> {suggestion}")
+
+        if event_obj.get("type") == "SHOT":
+            current_major = details.get("major")
+            default_major = self._default_shot_major_from_position(current_position)
+            if default_major and (not current_major or current_major == "待定"):
+                details["major"] = default_major
+                changes["major"] = default_major
+                print(f"位置默认大类: {event_obj.get('event_id', '')} -> {default_major}")
+
+        return changes
+
     def _create_top_right_panel(self):
         """创建右上角的面板，用于对象标注"""
         top_right_widget = QWidget()
@@ -726,6 +1155,7 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
             self._frame_annotations_cache = None
             self.update_match_info_ui()
             self._reset_event_tree_view()
+            self._sync_court_overlay()
             self.refresh_ui_for_current_frame()
 
                 # 将弹窗逻辑移到这里
@@ -752,6 +1182,7 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
                 resolution=[width, height], fps=fps, total_frames=total_frames
             )
             self._build_frame_annotations_cache()
+            self._sync_court_overlay()
             
             # 弹出比赛设置对话框
             dialog = MatchSetupDialog(self.annotations['match_info'], self)
@@ -793,6 +1224,7 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         cap.release()
         
         self.video_label.set_video_dimensions(width, height)
+        self._sync_court_overlay()
         
         # 修复Windows兼容性：确保video_label有有效尺寸后再设置target_size
         # 如果video_label的尺寸还是0，使用视频原始尺寸
@@ -819,6 +1251,8 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         - 使用数据副本确保内存安全，避免后台线程修改数据时影响显示
         """
         self.current_frame_num = frame_num
+        self.current_rgb_frame = rgb_array.copy()
+        self.current_frame_size = (width, height)
         
         # 【关键修复】在主线程中创建QImage和QPixmap
         # 确保数据是连续的，并使用tobytes()创建独立的数据副本
@@ -983,42 +1417,132 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
             self.video_thread.wait()
         event.accept()
 
+    def _get_match_players(self):
+        match_info = self.annotations.get("match_info", {}) if self.annotations else {}
+        player_a = match_info.get("player_a") or self.player_a_name
+        player_b = match_info.get("player_b") or self.player_b_name
+        return player_a, player_b
+
+    def _is_valid_match_player(self, player_name):
+        player_a, player_b = self._get_match_players()
+        return player_name in {player_a, player_b}
+
+    def _prompt_serving_player(self, title):
+        player_a, player_b = self._get_match_players()
+        if not player_a or not player_b or player_a == player_b:
+            QMessageBox.warning(self, "发球方信息缺失", "请先在比赛信息中设置两名不同的球员。")
+            return None
+        dialog = ServePlayerDialog(player_a, player_b, self)
+        dialog.setWindowTitle(title)
+        if dialog.exec():
+            return dialog.serving_player
+        return None
+
+    def _last_rally_winner_before_index(self, event_index):
+        events = self.annotations.get("events", []) if self.annotations else []
+        for event in reversed(events[:max(0, event_index)]):
+            if event.get("type") != "RALLY_END":
+                continue
+            winner = event.get("details", {}).get("winner")
+            if self._is_valid_match_player(winner):
+                return winner
+        return None
+
+    def _last_rally_winner_before_frame(self, frame_num):
+        events = self.annotations.get("events", []) if self.annotations else []
+        for event in reversed(events):
+            if event.get("type") != "RALLY_END":
+                continue
+            event_frame = event.get("frame")
+            if event_frame is None or event_frame > frame_num:
+                continue
+            winner = event.get("details", {}).get("winner")
+            if self._is_valid_match_player(winner):
+                return winner
+        return None
+
+    def _is_first_rally_start_index(self, rally_start_index):
+        events = self.annotations.get("events", []) if self.annotations else []
+        for index, event in enumerate(events):
+            if event.get("type") == "RALLY_START":
+                return index == rally_start_index
+        return False
+
+    def _get_rally_start_index_for_event(self, event_obj):
+        if not isinstance(event_obj, dict):
+            return -1
+        event_index = self._get_event_index(event_obj) if hasattr(self, "_get_event_index") else -1
+        if event_index < 0:
+            return -1
+        if event_obj.get("type") == "RALLY_START":
+            return event_index
+        events = self.annotations.get("events", [])
+        for index in range(event_index, -1, -1):
+            if events[index].get("type") == "RALLY_START":
+                return index
+        return -1
+
+    def _resolve_new_rally_serving_player(self):
+        previous_winner = self._last_rally_winner_before_frame(self.current_frame_num)
+        if previous_winner:
+            return previous_winner, "previous_winner"
+        serving_player = self._prompt_serving_player("第1局第1回合，请选择发球方")
+        return serving_player, "manual" if serving_player else ""
+
+    def ensure_serving_player_for_event(self, event_obj):
+        if not self.annotations or event_obj.get("type") not in ["RALLY_START", "SHOT"]:
+            return True
+        rally_start_index = self._get_rally_start_index_for_event(event_obj)
+        if rally_start_index < 0:
+            return True
+
+        events = self.annotations.get("events", [])
+        rally_start_event = events[rally_start_index]
+        details = rally_start_event.setdefault("details", {})
+        current_server = details.get("serving_player")
+        current_source = details.get("serving_player_source")
+
+        previous_winner = self._last_rally_winner_before_index(rally_start_index)
+        if previous_winner:
+            serving_player = previous_winner
+            source = "previous_winner"
+        elif self._is_first_rally_start_index(rally_start_index):
+            if self._is_valid_match_player(current_server) and current_source == "manual":
+                return True
+            serving_player = self._prompt_serving_player("第1局第1回合，请选择发球方")
+            source = "manual"
+        elif self._is_valid_match_player(current_server):
+            return True
+        else:
+            QMessageBox.warning(self, "发球方信息缺失", "无法自动确定发球方，请手动选择。")
+            serving_player = self._prompt_serving_player("选择发球方")
+            source = "manual"
+
+        if not serving_player:
+            return False
+
+        changed = current_server != serving_player or current_source != source
+        if not changed:
+            return True
+
+        details["serving_player"] = serving_player
+        details["serving_player_source"] = source
+        updated_events = [rally_start_event]
+        updated_events.extend(self.reevaluate_players_in_rally(rally_start_index))
+        if hasattr(self, "_update_event_items"):
+            self._update_event_items(updated_events)
+        self.set_dirty()
+        print(f"发球方已确认: {rally_start_event.get('event_id', '')} -> {serving_player}")
+        return True
+
     def add_rally_start_event(self):
         """
         添加一个回合开始事件。
-        智能判断：仅在0-0开局时要求用户选择发球方。
+        整场第一个回合手动选择发球方，后续回合使用上一回合赢家。
         """
         if self.current_frame_num < 0: return
 
-        serving_player = None
-        score = self.annotations['match_info']['current_set_score']
-        
-        # 1. 判断是否是0-0开局
-        if score == [0, 0]:
-            dialog = ServePlayerDialog(self.player_a_name, self.player_b_name, self)
-            dialog.setWindowTitle("新的一局开始，请选择发球方")
-            if dialog.exec():
-                serving_player = dialog.serving_player
-        else:
-            # 2. 如果不是开局，自动从上一个回合的胜利者推断
-            last_winner = None
-            events = self.annotations.get('events', [])
-            if events:
-                # 从后往前找最后一个回合结束事件
-                for event in reversed(events):
-                    if event['type'] == 'RALLY_END':
-                        last_winner = event['details'].get('winner')
-                        break
-            
-            if last_winner:
-                serving_player = last_winner
-            else:
-                # 兜底：如果找不到上一个胜利者（例如用户删除了事件），还是让用户手动选
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "信息缺失", "无法自动确定发球方，请手动选择。")
-                dialog = ServePlayerDialog(self.player_a_name, self.player_b_name, self)
-                if dialog.exec():
-                    serving_player = dialog.serving_player
+        serving_player, serving_player_source = self._resolve_new_rally_serving_player()
 
         if not serving_player:
             return # 如果用户取消选择，则不添加事件
@@ -1030,6 +1554,7 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
             "frame": self.current_frame_num,
             "details": {
                 "serving_player": serving_player,
+                "serving_player_source": serving_player_source,
                 "score_at_start": list(self.annotations['match_info']['current_set_score']),
                 "hand": "待定",
                 "major": "发球",
@@ -1155,6 +1680,9 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "操作无效", "无法添加击球事件，因为在此之前不存在任何“回合开始”的标记。")
             return
+
+        if not self.ensure_serving_player_for_event(owning_rally_start):
+            return
             
         # 2. 检查这个 SHOT 是否在回合的有效范围内
         # 回合的结束点是下一个 RALLY_START 或 SET_START
@@ -1220,6 +1748,8 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
 
         score = info.get('current_set_score', [0, 0])
         self.score_label.setText(f"{score[0]} - {score[1]}")
+        if hasattr(self, "_update_court_side_status_label"):
+            self._update_court_side_status_label()
 
     def update_score(self, winner_name):
         """根据胜利者更新分数"""
@@ -1415,6 +1945,7 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
                 self.annotations = json.load(f)
             self.annotations = normalize_annotations(self.annotations)
             self._build_frame_annotations_cache()
+            self._sync_court_overlay()
             # 校正视频路径：若与标注文件所在目录不一致，则更新到当前目录
             try:
                 ann_dir = os.path.dirname(file_path)
