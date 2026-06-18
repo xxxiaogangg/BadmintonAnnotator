@@ -332,6 +332,13 @@ def export_rows(data: dict[str, Any], *, gender: str, year: str) -> list[dict[st
 
 
 def build_rallies(events: list[dict[str, Any]]) -> list[Rally]:
+    rallies = build_rallies_from_structured_ids(events)
+    if rallies:
+        return rallies
+    return build_rallies_from_event_sequence(events)
+
+
+def build_rallies_from_structured_ids(events: list[dict[str, Any]]) -> list[Rally]:
     groups: dict[tuple[int, int], dict[str, Any]] = {}
     for event in events:
         event_id = str(event.get("event_id") or "")
@@ -364,15 +371,71 @@ def build_rallies(events: list[dict[str, Any]]) -> list[Rally]:
     return rallies
 
 
+def build_rallies_from_event_sequence(events: list[dict[str, Any]]) -> list[Rally]:
+    groups: dict[tuple[int, int], dict[str, Any]] = {}
+    current_set = 0
+    current_rally = 0
+    current_key: tuple[int, int] | None = None
+
+    for event in events:
+        event_type = str(event.get("type") or "")
+        details = event.get("details") if isinstance(event.get("details"), dict) else {}
+        frame = int(event.get("frame") or 0)
+
+        if event_type == "SET_START":
+            current_set += 1
+            current_rally = 0
+            current_key = None
+            continue
+
+        if event_type == "RALLY_START":
+            if current_set <= 0:
+                current_set = 1
+            current_rally += 1
+            current_key = (current_set, current_rally)
+            group = groups.setdefault(current_key, {"hits": {}, "end": None})
+            group["hits"][1] = Hit(current_set, current_rally, 1, frame, details, event_type)
+            continue
+
+        if event_type == "SHOT":
+            if current_key is None:
+                if current_set <= 0:
+                    current_set = 1
+                current_rally += 1
+                current_key = (current_set, current_rally)
+            group = groups.setdefault(current_key, {"hits": {}, "end": None})
+            shot_no = max(group["hits"].keys(), default=0) + 1
+            group["hits"][shot_no] = Hit(current_key[0], current_key[1], shot_no, frame, details, event_type)
+            continue
+
+        if event_type == "RALLY_END" and current_key is not None:
+            group = groups.setdefault(current_key, {"hits": {}, "end": None})
+            group["end"] = event
+            current_key = None
+
+    rallies = []
+    for (set_no, rally_no), group in sorted(groups.items()):
+        hits = [group["hits"][shot_no] for shot_no in sorted(group["hits"])]
+        rallies.append(Rally(set_no=set_no, rally_no=rally_no, hits=hits, end_event=group["end"]))
+    return rallies
+
+
 def build_set_frames(events: list[dict[str, Any]], rallies: list[Rally]) -> dict[int, dict[str, int]]:
     frames: dict[int, dict[str, int]] = {}
+    current_set = 0
     for event in events:
         match = SET_RE.match(str(event.get("event_id") or ""))
-        if not match:
-            continue
-        set_no = int(match.group("set"))
-        key = "start" if match.group("kind") == "start" else "end"
-        frames.setdefault(set_no, {})[key] = int(event.get("frame") or 0)
+        event_type = str(event.get("type") or "")
+        if match:
+            set_no = int(match.group("set"))
+            key = "start" if match.group("kind") == "start" else "end"
+            frames.setdefault(set_no, {})[key] = int(event.get("frame") or 0)
+            current_set = max(current_set, set_no)
+        elif event_type == "SET_START":
+            current_set += 1
+            frames.setdefault(current_set, {})["start"] = int(event.get("frame") or 0)
+        elif event_type == "SET_END" and current_set > 0:
+            frames.setdefault(current_set, {})["end"] = int(event.get("frame") or 0)
     for rally in rallies:
         if not rally.hits:
             continue
