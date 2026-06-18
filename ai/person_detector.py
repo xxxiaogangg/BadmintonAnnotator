@@ -33,6 +33,9 @@ class YoloPersonDetector:
             project_root / "ai" / "models" / "yolov8n.onnx",
             project_root.parent / "cvat" / "yolov8_onnx_person_detector" / "yolov8n.onnx",
         ]
+        if getattr(sys, "frozen", False) and sys.platform == "darwin":
+            contents_root = executable_root.parent
+            candidates.insert(1, contents_root / "Resources" / "ai" / "models" / "yolov8n.onnx")
         for candidate in candidates:
             if candidate.exists():
                 return candidate

@@ -187,7 +187,10 @@ class EventTreeMixin:
         # 更新全局引用，供审阅模块使用
         self.event_items = all_items
 
-        self.event_tree.resizeColumnToContents(0)
+        if len(events) < 5000:
+            self.event_tree.resizeColumnToContents(0)
+        else:
+            self.event_tree.setColumnWidth(0, 180)
 
         # 智能滚动逻辑：优先滚动到指定事件，否则滚动到底部
         if scroll_to_event_id and scroll_to_event_id in all_items:
@@ -985,6 +988,6 @@ class EventTreeMixin:
             final_score = event.get("details", {}).get("final_score")
             if isinstance(final_score, list) and len(final_score) == 2:
                 parent_item.setText(1, f"最终比分: {final_score[0]}-{final_score[1]}")
-        if hasattr(self, "event_tree"):
+        if hasattr(self, "event_tree") and len(events) < 5000:
             self.event_tree.resizeColumnToContents(0)
         return item

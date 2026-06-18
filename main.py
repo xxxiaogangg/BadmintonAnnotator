@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import os
 import json
+from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QSlider, QFileDialog, QGroupBox, QTreeWidget,
                              QListWidget, QMenuBar, QMenu, QListWidgetItem, QDialog, QCheckBox)  # Add QListWidgetItem
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (QLabel, QSplitter, QComboBox, QMessageBox,
 
 from core.video_worker import VideoWorker
 from ai.person_detector import YoloPersonDetector
+from scripts.export_json_to_shan_xls import default_output_path, write_xls
 from widgets.drawing_label import DrawingLabel
 from widgets.match_setup_dialog import MatchSetupDialog # 导入新对话框
 from widgets.serve_player_dialog import CourtSideAssignmentDialog, ServePlayerDialog, WinnerSelectionDialog
@@ -115,6 +117,10 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         file_menu.addAction(load_action)
         QShortcut(QKeySequence("Ctrl+O"), self, self.load_annotations)
 
+        export_xls_action = QAction("导出xls", self)
+        export_xls_action.triggered.connect(self.export_current_annotations_to_xls)
+        file_menu.addAction(export_xls_action)
+
         # --- 编辑菜单 ---
         edit_menu = menu_bar.addMenu("&编辑")
         delete_action = QAction("删除选中事件", self)
@@ -179,6 +185,10 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
 
         # 播放/暂停
         self.play_pause_btn = QPushButton("▶ 播放")
+
+        # 导出
+        self.export_xls_btn = QPushButton("导出xls")
+        self.export_xls_btn.clicked.connect(self.export_current_annotations_to_xls)
         
         # 倍速
         self.rate_label = QLabel("速度:")
@@ -194,6 +204,8 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         buttons_layout.addSpacing(50)
         buttons_layout.addWidget(self.play_pause_btn)
         buttons_layout.addSpacing(50)
+        buttons_layout.addWidget(self.export_xls_btn)
+        buttons_layout.addSpacing(20)
         buttons_layout.addWidget(self.rate_label)
         buttons_layout.addWidget(self.rate_combo)
         buttons_layout.addStretch()
@@ -313,6 +325,8 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         events_layout = QVBoxLayout(events_box)
         self.event_tree = QTreeWidget()
         self.event_tree.setHeaderLabels(["事件", "详情"])
+        self.event_tree.setUniformRowHeights(True)
+        self.event_tree.setColumnWidth(0, 180)
         self.event_tree.itemClicked.connect(self.on_event_tree_item_clicked)
         self.event_tree.itemDoubleClicked.connect(self.on_event_tree_item_double_clicked)
         events_layout.addWidget(self.event_tree)
@@ -1109,7 +1123,20 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
             self.video_thread.quit()
             self.video_thread.wait()
 
-        # 2. 启动新的后台视频线程 (逻辑不变)
+        self.current_frame_num = -1
+        self.current_rgb_frame = None
+        self.current_frame_size = None
+
+        # 2. 先处理标注恢复/加载，避免视频线程回调和大事件树刷新同时争用主线程。
+        did_load_file = self._load_session_annotation(video_path)
+        if not did_load_file:
+            if not self._initialize_new_session_annotations(video_path):
+                return
+
+        # 3. 启动新的后台视频线程。
+        self._start_video_worker(video_path)
+
+    def _start_video_worker(self, video_path):
         self.video_thread = QThread()
         self.video_worker = VideoWorker(video_path)
         self.video_worker.moveToThread(self.video_thread)
@@ -1124,76 +1151,61 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
         self.video_thread.finished.connect(self.video_thread.deleteLater)
         self.video_thread.start()
 
-        # <<< ================== 核心新增: 自动加载逻辑 ================== >>>
-        # 3. 尝试自动加载同名的标注文件
-        # 约定标注文件名为: [视频文件名].json
+    def _load_session_annotation(self, video_path):
         annotation_path = video_path + ".json"
         backup_path = video_path + ".autosave.json"
         should_load_backup = False
-        did_load_file = False
 
         if os.path.exists(backup_path):
             # 如果主文件不存在，或备份文件比主文件更新，则提示加载备份
             if not os.path.exists(annotation_path) or \
                os.path.getmtime(backup_path) > os.path.getmtime(annotation_path):
-                from PyQt6.QtWidgets import QMessageBox
-                reply = QMessageBox.question(self, "恢复文件", 
+                reply = QMessageBox.question(self, "恢复文件",
                                              "检测到上次有未保存的工作，是否从自动备份中恢复？",
                                              QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                 if reply == QMessageBox.StandardButton.Yes:
                     should_load_backup = True
-        
+
         if should_load_backup:
             print(f"从备份文件中恢复: {backup_path}")
-            did_load_file = self.load_annotations(backup_path)
-        elif os.path.exists(annotation_path):
+            return self.load_annotations(backup_path)
+        if os.path.exists(annotation_path):
             print(f"自动加载主标注文件: {annotation_path}")
-            did_load_file = self.load_annotations(annotation_path)
-        else:
-            print("未找到任何标注文件，将创建新的标注。")
-            self.annotations = {}
-            self._frame_annotations_cache = None
-            self.update_match_info_ui()
-            self._reset_event_tree_view()
-            self._sync_court_overlay()
-            self.refresh_ui_for_current_frame()
+            return self.load_annotations(annotation_path)
+        return False
 
-                # 将弹窗逻辑移到这里
-        if not did_load_file:
-            print("未找到任何标注文件，将为新会话初始化。")
-            # 只有在没有加载任何文件的情况下，才创建新标注并弹窗
-            
-            # 先获取视频元数据来初始化
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                QMessageBox.critical(self, "视频错误", "无法读取视频元数据，请检查文件是否损坏。")
-                print(f"读取视频元数据失败: {video_path}")
-                cap.release()
-                return
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30
-            filename = os.path.basename(video_path)
+    def _initialize_new_session_annotations(self, video_path):
+        print("未找到任何标注文件，将为新会话初始化。")
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            QMessageBox.critical(self, "视频错误", "无法读取视频元数据，请检查文件是否损坏。")
+            print(f"读取视频元数据失败: {video_path}")
             cap.release()
+            return False
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        filename = os.path.basename(video_path)
+        cap.release()
 
-            self.annotations = get_new_annotation_structure(
-                video_filename=filename, video_path=video_path,
-                resolution=[width, height], fps=fps, total_frames=total_frames
-            )
-            self._build_frame_annotations_cache()
-            self._sync_court_overlay()
-            
-            # 弹出比赛设置对话框
-            dialog = MatchSetupDialog(self.annotations['match_info'], self)
-            if dialog.exec():
-                updated_info = dialog.get_data()
-                self.annotations['match_info'].update(updated_info)
-            
-            # 更新UI
-            self.update_match_info_ui()
-            self._reset_event_tree_view()
-            self.refresh_ui_for_current_frame()
+        self.annotations = get_new_annotation_structure(
+            video_filename=filename, video_path=video_path,
+            resolution=[width, height], fps=fps, total_frames=total_frames
+        )
+        self._build_frame_annotations_cache()
+        self._sync_court_overlay()
+
+        dialog = MatchSetupDialog(self.annotations['match_info'], self)
+        if dialog.exec():
+            updated_info = dialog.get_data()
+            self.annotations['match_info'].update(updated_info)
+
+        self.update_match_info_ui()
+        self._reset_event_tree_view()
+        self.refresh_ui_for_current_frame()
+        return True
 
     def on_video_error(self, error_message):
         """处理视频加载或播放错误"""
@@ -1933,6 +1945,42 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
                 QMessageBox.critical(self, "保存失败", f"保存标注时发生错误：\n{str(e)}")
                 print(f"保存失败: {e}")
 
+    def export_current_annotations_to_xls(self):
+        if not self.annotations:
+            QMessageBox.information(self, "提示", "没有标注可以导出。")
+            return
+
+        video_path = self.annotations.get('video_info', {}).get('path', '')
+        if video_path:
+            default_path = default_output_path(Path(f"{video_path}.json"))
+        else:
+            default_path = Path.cwd() / "badminton-json-export.xls"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出xls",
+            str(default_path),
+            "Excel-compatible XLS (*.xls);;CSV Files (*.csv);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        output_path = Path(file_path)
+        if not output_path.suffix:
+            output_path = output_path.with_suffix(".xls")
+
+        try:
+            row_count = write_xls(self.annotations, output_path)
+            self.statusBar().showMessage(f"已导出 XLS: {output_path}", 4000)
+            QMessageBox.information(self, "导出完成", f"已导出 {row_count} 行。\n{output_path}")
+        except PermissionError:
+            QMessageBox.warning(self, "导出失败", "无法写入文件：权限不足。\n请检查文件是否被其他程序占用。")
+        except OSError as e:
+            QMessageBox.warning(self, "导出失败", f"无法写入文件：\n{str(e)}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出 XLS 时发生错误：\n{str(e)}")
+            print(f"导出 XLS 失败: {e}")
+
     def load_annotations(self, annotation_path=None):
         if annotation_path:
             file_path = annotation_path
@@ -1967,7 +2015,9 @@ class MainWindow(EventTreeMixin, ReviewMixin, QMainWindow):
             # 【关键】加载后，必须全面刷新UI
             self.update_match_info_ui()
             if self.annotations.get("events"):
-                self.refresh_all_ui()
+                QApplication.processEvents()
+                self.refresh_all_ui(scroll_to_bottom=False)
+                QApplication.processEvents()
             else:
                 self._reset_event_tree_view()
             self.refresh_ui_for_current_frame()
